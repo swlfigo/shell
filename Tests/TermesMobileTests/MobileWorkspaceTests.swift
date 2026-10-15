@@ -1,0 +1,385 @@
+import XCTest
+import UIKit
+import TermesKit
+import SSHCore
+@testable import TermesMobile
+
+@MainActor
+final class MobileWorkspaceTests: XCTestCase {
+  private var directory: URL!
+  private var workspace: MobileWorkspace!
+
+  override func setUp() async throws {
+    directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    workspace = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+  }
+
+  override func tearDown() async throws {
+    for session in workspace.sessions { workspace.close(session) }
+    workspace = nil
+    try? FileManager.default.removeItem(at: directory)
+  }
+
+  private func draft(name: String = "Development") -> MobileHostDraft {
+    var draft = MobileHostDraft()
+    draft.name = name; draft.hostname = "127.0.0.1"; draft.port = "1"
+    draft.password = "local-test-password"
+    return draft
+  }
+
+  func testInvalidAddressDoesNotPersistHost() throws {
+    for port in ["", "0", "65536", "ssh"] {
+      var invalid = draft(); invalid.port = port
+      XCTAssertThrowsError(try workspace.save(invalid))
+    }
+    var invalid = draft(); invalid.hostname = "   "
+    XCTAssertThrowsError(try workspace.save(invalid))
+    XCTAssertTrue(workspace.hosts.isEmpty)
+    XCTAssertTrue(try workspace.profiles.profiles().isEmpty)
+  }
+
+  func testInvalidCredentialDoesNotCreateHost() {
+    var invalid = draft(); invalid.password = ""
+    XCTAssertThrowsError(try workspace.save(invalid))
+    invalid.authentication = .privateKey; invalid.privateKey = "not a key"
+    XCTAssertThrowsError(try workspace.save(invalid))
+    invalid.authentication = .existingKey
+    XCTAssertThrowsError(try workspace.save(invalid))
+    XCTAssertTrue(workspace.hosts.isEmpty)
+  }
+
+  func testEditPreservesIdentityAndCredential() throws {
+    var original = draft(); original.name = "  Development  "; original.username = "  root "
+    let saved = try workspace.save(original)
+    XCTAssertEqual(saved.name, "Development")
+    XCTAssertEqual(saved.username, "root")
+    var edit = MobileHostDraft(profile: saved)
+    edit.name = "Production"; edit.port = "2222"
+    let updated = try workspace.save(edit)
+    XCTAssertEqual(updated.id, saved.id)
+    XCTAssertEqual(workspace.hosts.count, 1)
+    XCTAssertEqual(try workspace.profiles.makeConfig(for: saved.id).auth, .password(original.password))
+    XCTAssertEqual(try workspace.profiles.makeConfig(for: saved.id).port, 2222)
+    let persisted = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+    XCTAssertEqual(persisted.hosts.first?.name, "Production")
+  }
+
+  func testSwitchingAndClosingSessionsRetainsOtherTerminal() throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile))
+    first.disconnect()
+    let terminal = first.terminalController
+    terminal.terminal.feed(text: "retained output")
+    let second = try XCTUnwrap(workspace.open(profile, newSession: true))
+    second.disconnect()
+    workspace.selectedSessionID = first.id
+    XCTAssertTrue(workspace.selectedSession?.terminalController === terminal)
+    let line = terminal.terminal.getTerminal().getLine(row: 0)
+    XCTAssertTrue(line?.translateToString(trimRight: true).contains("retained output") == true)
+    workspace.close(first)
+    XCTAssertEqual(workspace.selectedSessionID, second.id)
+    XCTAssertEqual(workspace.sessions.count, 1)
+    workspace.close(second)
+    XCTAssertNil(workspace.selectedSessionID)
+    XCTAssertTrue(workspace.sessions.isEmpty)
+  }
+
+  func testClosingBeforeConnectionTaskStartsDoesNotReconnect() async throws {
+    let profile = try workspace.save(draft())
+    let session = try XCTUnwrap(workspace.open(profile))
+    workspace.close(session)
+    await Task.yield()
+    XCTAssertTrue(session.manager.state == .idle || session.manager.state == .disconnected)
+    XCTAssertFalse(session.manager.state.isActive)
+    XCTAssertNil(session.manager.onData)
+  }
+
+  func testEditingDestinationCreatesNewSessionAndDoesNotRetargetOldTerminal() throws {
+    let original = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(original))
+    first.disconnect()
+    var edit = MobileHostDraft(profile: original)
+    edit.hostname = "127.0.0.2"; edit.name = "Moved"
+    let updated = try workspace.save(edit)
+    let second = try XCTUnwrap(workspace.open(updated))
+    second.disconnect()
+    XCTAssertNotEqual(first.id, second.id)
+    XCTAssertEqual(workspace.sessions.count, 2)
+    XCTAssertTrue(first.address.contains("127.0.0.1"))
+    XCTAssertTrue(second.address.contains("127.0.0.2"))
+    workspace.reconnect(first)
+    XCTAssertEqual(workspace.error, MobileValidationError.profileChanged.errorDescription)
+    XCTAssertFalse(first.manager.state.isActive)
+  }
+
+  func testAppearanceChangesKeepTerminalInstanceAndOutput() throws {
+    let profile = try workspace.save(draft())
+    let session = try XCTUnwrap(workspace.open(profile))
+    session.disconnect()
+    let controller = session.terminalController
+    controller.terminal.feed(text: "before theme change")
+    var settings = AppearanceSettings(); settings.terminalFontSize = 18; settings.terminalTheme = .flexokiLight
+    controller.apply(settings, dark: false)
+    XCTAssertTrue(session.terminalController === controller)
+    XCTAssertEqual(controller.terminal.font.pointSize, 18)
+    XCTAssertTrue(controller.terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true).contains("before theme change") == true)
+  }
+
+  func testClosingSessionClosesItsMonitor() throws {
+    let profile = try workspace.save(draft())
+    let session = try XCTUnwrap(workspace.open(profile))
+    session.disconnect()
+    let monitor = session.manager.serverMonitor
+    monitor.open()
+    XCTAssertTrue(monitor.isOpen)
+    workspace.close(session)
+    XCTAssertFalse(monitor.isOpen)
+    XCTAssertEqual(monitor.state, .closed)
+  }
+}
+
+@MainActor
+final class MobileTerminalOutputNoticeTests: XCTestCase {
+  private func fixture() -> (SessionManager, MobileTerminalController, UIWindow) {
+    let manager = SessionManager(knownHosts: KnownHostsStore(
+      fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
+    let controller = MobileTerminalController(manager: manager)
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 360, height: 500))
+    window.rootViewController = controller
+    window.makeKeyAndVisible()
+    controller.view.frame = window.bounds
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
+    return (manager, controller, window)
+  }
+
+  private func history(_ count: Int = 200) -> Data {
+    Data((0..<count).map { "history \($0)\r\n" }.joined().utf8)
+  }
+
+  private func close(_ controller: MobileTerminalController, window: UIWindow) {
+    controller.hideKeyboard()
+    controller.shutdown()
+    window.isHidden = true
+    window.rootViewController = nil
+  }
+
+  func testNewOutputPreservesHistoryAndGridWhileButtonReturnsToLatestWithoutOpeningKeyboard() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    let terminal = controller.terminal, buffer = terminal.getTerminal()
+    manager.onData?(history())
+    XCTAssertFalse(controller.hasUnseenOutput)
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+    terminal.scroll(toPosition: 0.5)
+    XCTAssertTrue(controller.newOutputButton.isHidden, "reading history alone must not create a notification")
+    manager.onData?(Data())
+    XCTAssertFalse(controller.hasUnseenOutput)
+
+    let topRow = buffer.getTopVisibleRow()
+    let firstLine = buffer.getLine(row: 0)?.translateToString(trimRight: true)
+    let terminalFrame = terminal.frame, rows = buffer.rows, cols = buffer.cols
+    manager.onData?(Data("latest server output\r\n".utf8))
+    controller.view.layoutIfNeeded()
+
+    XCTAssertTrue(controller.hasUnseenOutput)
+    XCTAssertFalse(controller.newOutputButton.isHidden)
+    XCTAssertEqual(buffer.getTopVisibleRow(), topRow)
+    XCTAssertEqual(buffer.getLine(row: 0)?.translateToString(trimRight: true), firstLine)
+    XCTAssertEqual(terminal.frame, terminalFrame)
+    XCTAssertEqual(buffer.rows, rows)
+    XCTAssertEqual(buffer.cols, cols)
+    let buttonFrame = controller.newOutputButton.convert(controller.newOutputButton.bounds, to: controller.view)
+    XCTAssertTrue(controller.view.bounds.contains(buttonFrame))
+    XCTAssertGreaterThanOrEqual(buttonFrame.height, 44)
+    XCTAssertTrue(controller.view.hitTest(CGPoint(x: buttonFrame.midX, y: buttonFrame.midY), with: nil)
+      === controller.newOutputButton)
+
+    let image = UIGraphicsImageRenderer(bounds: controller.view.bounds).image { _ in
+      controller.view.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true)
+    }
+    let attachment = XCTAttachment(image: image)
+    attachment.name = "Mobile terminal new output notice"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+
+    XCTAssertFalse(terminal.isFirstResponder)
+    controller.newOutputButton.sendActions(for: .touchUpInside)
+    XCTAssertEqual(terminal.scrollPosition, 1)
+    XCTAssertFalse(controller.hasUnseenOutput)
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+    XCTAssertFalse(terminal.isFirstResponder, "returning to output must not open a dismissed keyboard")
+    XCTAssertTrue(terminal.getTerminal() === buffer)
+    XCTAssertTrue(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("latest server output"))
+    manager.onData?(Data("following output\r\n".utf8))
+    XCTAssertEqual(terminal.scrollPosition, 1)
+    XCTAssertFalse(controller.hasUnseenOutput)
+  }
+
+  func testReturningToLatestKeepsAnAlreadyFocusedTerminalFocused() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    let terminal = controller.terminal
+    controller.showKeyboard()
+    XCTAssertTrue(terminal.isFirstResponder)
+    manager.onData?(history())
+    terminal.scroll(toPosition: 0.5)
+    manager.onData?(Data("background output\r\n".utf8))
+    XCTAssertTrue(controller.hasUnseenOutput)
+    controller.newOutputButton.sendActions(for: .touchUpInside)
+    XCTAssertEqual(terminal.scrollPosition, 1)
+    XCTAssertTrue(terminal.isFirstResponder)
+    XCTAssertFalse(controller.hasUnseenOutput)
+  }
+
+  func testScrollViewReachingBottomAndAlternateScreenClearTheNotice() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    let terminal = controller.terminal
+    manager.onData?(Data("short output".utf8))
+    XCTAssertFalse(terminal.canScroll)
+    XCTAssertEqual(terminal.scrollPosition, 0)
+    XCTAssertFalse(controller.hasUnseenOutput)
+
+    terminal.changeScrollback(50)
+    manager.onData?(history())
+    terminal.scroll(toPosition: 0)
+    manager.onData?(history())
+    XCTAssertEqual(terminal.scrollPosition, 0)
+    XCTAssertTrue(controller.hasUnseenOutput, "the oldest line in a full history is still away from latest output")
+
+    // UIScrollView gestures update contentOffset without calling TerminalViewDelegate.scrolled.
+    let bottom = max(0, terminal.contentSize.height - terminal.bounds.height + terminal.adjustedContentInset.bottom)
+    terminal.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+    XCTAssertEqual(terminal.scrollPosition, 1)
+    XCTAssertFalse(controller.hasUnseenOutput)
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+
+    terminal.scroll(toPosition: 0.5)
+    manager.onData?(Data("\rprogress update".utf8))
+    XCTAssertTrue(controller.hasUnseenOutput, "output without a newline must also notify")
+    manager.onData?(Data("\u{1b}[?1049halternate screen\r\n".utf8))
+    XCTAssertFalse(terminal.canScroll)
+    XCTAssertFalse(controller.hasUnseenOutput)
+    manager.onData?(Data("alternate update".utf8))
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+
+    manager.onData?(Data("\u{1b}[?1049l".utf8))
+    terminal.scroll(toPosition: 0.5)
+    manager.onData?(Data("resumed output\r\n".utf8))
+    XCTAssertTrue(controller.hasUnseenOutput)
+    terminal.clearScrollback()
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
+    XCTAssertFalse(terminal.canScroll)
+    XCTAssertFalse(controller.hasUnseenOutput)
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+  }
+
+  func testHiddenTerminalRetainsNoticeAndSmallLayoutsKeepItReachable() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    let terminal = controller.terminal, buffer = terminal.getTerminal()
+    manager.onData?(history())
+    terminal.scroll(toPosition: 0.5)
+    window.rootViewController = UIViewController()
+    XCTAssertNil(controller.view.window)
+    manager.onData?(Data("hidden session output\r\n".utf8))
+    XCTAssertTrue(controller.hasUnseenOutput)
+
+    window.rootViewController = controller
+    controller.apply(.init(terminalTheme: .termiusDark, terminalFontSize: 18), dark: true)
+    for size in [CGSize(width: 240, height: 140), CGSize(width: 700, height: 360)] {
+      window.frame.size = size
+      controller.view.frame = CGRect(origin: .zero, size: size)
+      controller.view.setNeedsLayout()
+      controller.view.layoutIfNeeded()
+      XCTAssertTrue(controller.hasUnseenOutput)
+      XCTAssertFalse(controller.newOutputButton.isHidden)
+      let frame = controller.newOutputButton.convert(controller.newOutputButton.bounds, to: controller.view)
+      XCTAssertTrue(controller.view.bounds.contains(frame))
+      XCTAssertGreaterThanOrEqual(frame.height, 44)
+    }
+    XCTAssertTrue(terminal.getTerminal() === buffer)
+    controller.newOutputButton.sendActions(for: .touchUpInside)
+    controller.apply(.init(terminalTheme: .light, terminalFontSize: 14), dark: false)
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
+    XCTAssertFalse(controller.hasUnseenOutput, "appearance and layout changes must not create unread output")
+  }
+
+  func testLongMixedWidthLinesKeepEveryNumberedSegmentAcrossLayoutAndFontReflow() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    controller.apply(.init(terminalFontSize: 14), dark: false)
+    let terminal = controller.terminal, model = terminal.getTerminal()
+    let expectedSegments = (0..<8).map { row in
+      (0..<16).map { segment in "[行\(row)段\(segment):Ab09中文终端Wide]" }
+    }
+    let payload = expectedSegments.map { $0.joined(separator: "|") }.joined(separator: "\r\n")
+    manager.onData?(Data((payload + "\r\nready> ").utf8))
+
+    // Reconstruct hard lines from soft-wrapped rows, omitting only wide-cell fillers.
+    func logicalLines() -> [String] {
+      var result: [String] = []
+      var row = model.buffer.totalLinesTrimmed
+      while let line = model.getScrollInvariantLine(row: row) {
+        let text = line.translateToString(trimRight: true, skipNullCellsFollowingWide: true,
+          characterProvider: { model.getCharacter(for: $0) })
+        if line.isWrapped, !result.isEmpty { result[result.count - 1] += text }
+        else { result.append(text) }
+        row += 1
+      }
+      return result.filter { !$0.isEmpty }
+    }
+
+    func assertContents(_ phase: String) {
+      let lines = logicalLines()
+      XCTAssertEqual(model.buffer.totalLinesTrimmed, 0, "\(phase): fixture must fit in scrollback")
+      XCTAssertEqual(lines.count, expectedSegments.count + 1, "\(phase): hard-line boundaries changed")
+      for (row, expected) in expectedSegments.enumerated() {
+        guard row < lines.count else { continue }
+        XCTAssertEqual(lines[row].components(separatedBy: "|"), expected,
+          "\(phase): row \(row) lost, duplicated, or reordered a numbered segment")
+      }
+      XCTAssertEqual(lines.last, "ready> ", "\(phase): the live prompt changed")
+    }
+
+    assertContents("initial portrait")
+    var columnCounts = Set([model.cols])
+    for (size, fontSize) in [
+      (CGSize(width: 700, height: 320), 14.0),
+      (CGSize(width: 260, height: 380), 14.0),
+      (CGSize(width: 260, height: 380), 22.0),
+      (CGSize(width: 700, height: 320), 22.0),
+      (CGSize(width: 360, height: 500), 14.0),
+    ] {
+      window.frame.size = size
+      controller.view.frame = CGRect(origin: .zero, size: size)
+      controller.view.setNeedsLayout()
+      controller.view.layoutIfNeeded()
+      controller.apply(.init(terminalFontSize: fontSize), dark: false)
+      controller.view.layoutIfNeeded()
+      columnCounts.insert(model.cols)
+      XCTAssertTrue(terminal.getTerminal() === model)
+      assertContents("\(Int(size.width)) × \(Int(size.height)), font \(Int(fontSize))")
+    }
+    XCTAssertGreaterThan(columnCounts.count, 2, "the test must exercise different terminal widths")
+  }
+
+  func testShutdownClearsAnExistingNoticeAndUnbindsOutput() {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    let terminal = controller.terminal
+    manager.onData?(history())
+    terminal.scroll(toPosition: 0.5)
+    XCTAssertTrue(terminal.canScroll)
+    XCTAssertLessThan(terminal.scrollPosition, 1)
+    manager.onData?(Data("output before shutdown\r\n".utf8))
+    XCTAssertTrue(controller.hasUnseenOutput)
+    controller.shutdown()
+    XCTAssertNil(manager.onData)
+    XCTAssertFalse(controller.hasUnseenOutput)
+    XCTAssertTrue(controller.newOutputButton.isHidden)
+  }
+}

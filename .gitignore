@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+!Termes.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# 本地密钥/测试材料(防止误提交私钥)
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
+*_rsa
+*_ed25519
+
+# 本地环境凭据
+.env
+.env.*
+!.env.example
+!.env.template
+.netrc
