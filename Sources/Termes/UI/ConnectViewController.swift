@@ -164,6 +164,8 @@ final class ConnectViewController: NSViewController {
     document.addSubview(formStack)
     formScroll.hasVerticalScroller = true
     formScroll.autohidesScrollers = true
+    // Keep the clip width stable when a short split pane starts scrolling.
+    formScroll.scrollerStyle = .overlay
     formScroll.drawsBackground = false
     formScroll.automaticallyAdjustsContentInsets = false
     formScroll.documentView = document

@@ -1,7 +1,10 @@
-"""Loopback SSH fixture with synthetic monitoring data; never executes a shell."""
+"""Loopback SSH fixture with isolated SFTP storage and synthetic monitoring; no shell."""
 
+import os
+import posixpath
 import re
 import socket
+import tempfile
 import threading
 import uuid
 import paramiko
@@ -9,6 +12,114 @@ import paramiko
 key = paramiko.RSAKey.generate(2048)
 sample_lock = threading.Lock()
 sample_count = 0
+storage = tempfile.TemporaryDirectory(prefix='termes-sftp-fixture-')
+storage_root = os.path.realpath(storage.name)
+with open(os.path.join(storage.name, 'README.txt'), 'w') as document:
+    document.write('Termes SFTP fixture\nEdit this UTF-8 document.\n')
+
+
+class FileHandle(paramiko.SFTPHandle):
+    def stat(self):
+        try:
+            return paramiko.SFTPAttributes.from_stat(os.fstat(self.readfile.fileno()))
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def chattr(self, attr):
+        try:
+            if attr.st_mode is not None:
+                os.fchmod(self.readfile.fileno(), attr.st_mode)
+            if attr.st_uid is not None and attr.st_gid is not None:
+                os.fchown(self.readfile.fileno(), attr.st_uid, attr.st_gid)
+            return paramiko.SFTP_OK
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+
+class Files(paramiko.SFTPServerInterface):
+    def canonicalize(self, path):
+        return posixpath.normpath('/' + path.lstrip('/'))
+
+    def local(self, path):
+        candidate = os.path.realpath(os.path.join(storage_root, self.canonicalize(path).lstrip('/')))
+        if os.path.commonpath([storage_root, candidate]) != storage_root:
+            raise PermissionError(13, 'Outside fixture storage')
+        return candidate
+
+    def list_folder(self, path):
+        try:
+            entries = []
+            for name in os.listdir(self.local(path)):
+                entry = paramiko.SFTPAttributes.from_stat(os.lstat(self.local(posixpath.join(path, name))))
+                entry.filename = name
+                entries.append(entry)
+            return entries
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def stat(self, path):
+        try:
+            return paramiko.SFTPAttributes.from_stat(os.stat(self.local(path)))
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    lstat = stat
+
+    def open(self, path, flags, attr):
+        try:
+            descriptor = os.open(self.local(path), flags, attr.st_mode or 0o644)
+            mode = 'r+b' if flags & os.O_RDWR else 'wb' if flags & os.O_WRONLY else 'rb'
+            stream = os.fdopen(descriptor, mode)
+            handle = FileHandle(flags)
+            handle.readfile = stream
+            handle.writefile = stream
+            return handle
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def mutate(self, operation, *paths):
+        try:
+            operation(*(self.local(path) for path in paths))
+            return paramiko.SFTP_OK
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+    def mkdir(self, path, attr):
+        return self.mutate(lambda path: os.mkdir(path, attr.st_mode or 0o755), path)
+
+    def rmdir(self, path):
+        return self.mutate(os.rmdir, path)
+
+    def remove(self, path):
+        return self.mutate(os.unlink, path)
+
+    def rename(self, source, destination):
+        if os.path.exists(self.local(destination)):
+            return paramiko.SFTP_FAILURE
+        return self.mutate(os.rename, source, destination)
+
+    def posix_rename(self, source, destination):
+        return self.mutate(os.replace, source, destination)
+
+    def chattr(self, path, attr):
+        try:
+            paramiko.SFTPServer.set_file_attr(self.local(path), attr)
+            return paramiko.SFTP_OK
+        except OSError as error:
+            return paramiko.SFTPServer.convert_errno(error.errno)
+
+
+class FileServer(paramiko.SFTPServer):
+    def _send_server_version(self):
+        packet, payload = self._read_packet()
+        if packet != paramiko.sftp.CMD_INIT:
+            raise paramiko.SSHException('Expected SFTP initialization')
+        reply = paramiko.Message()
+        reply.add_int(3)
+        reply.add_string('posix-rename@openssh.com')
+        reply.add_string('1')
+        self._send_packet(paramiko.sftp.CMD_VERSION, reply)
+        return int.from_bytes(payload[:4], 'big')
 
 
 def monitoring_response(command):
@@ -83,6 +194,14 @@ class Server(paramiko.ServerInterface):
         request['ready'].set()
         return True
 
+    def check_channel_subsystem_request(self, channel, name):
+        accepted = super().check_channel_subsystem_request(channel, name)
+        if accepted:
+            request = self.request(channel)
+            request['kind'] = 'sftp'
+            request['ready'].set()
+        return accepted
+
     def check_channel_exec_request(self, channel, command):
         request = self.request(channel)
         request['kind'] = 'exec'
@@ -96,6 +215,10 @@ def serve_channel(channel, server, transport):
     try:
         request = server.request(channel)
         if not request['ready'].wait(20):
+            return
+        if request['kind'] == 'sftp':
+            while transport.is_active() and not channel.closed:
+                stream_stopped.wait(0.2)
             return
         if request['kind'] == 'exec':
             response = monitoring_response(request['command'])
@@ -160,6 +283,7 @@ def serve(client):
     transport = paramiko.Transport(client)
     try:
         transport.add_server_key(key)
+        transport.set_subsystem_handler('sftp', FileServer, Files)
         server = Server()
         transport.start_server(server=server)
         # Monitoring uses its own connection and one exec channel per sample.

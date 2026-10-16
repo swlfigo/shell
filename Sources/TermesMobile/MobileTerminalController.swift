@@ -80,7 +80,8 @@ final class MobileTerminalController: UIViewController, @preconcurrency Terminal
     guard settings != appliedSettings || dark != appliedDark else { return }
     appliedSettings = settings; appliedDark = dark
     let palette = settings.terminalTheme.palette(effectiveDark: dark)
-    terminal.font = .monospacedSystemFont(ofSize: settings.terminalFontSize, weight: .regular)
+    terminal.font = settings.terminalFontName.flatMap { UIFont(name: $0, size: settings.terminalFontSize) }
+      ?? .monospacedSystemFont(ofSize: settings.terminalFontSize, weight: .regular)
     terminal.getTerminal().ansi256PaletteStrategy = .xterm
     terminal.nativeBackgroundColor = palette.background.uiColor
     terminal.nativeForegroundColor = TerminalColor(settings.terminalTextColor ?? palette.foreground.rgb).uiColor

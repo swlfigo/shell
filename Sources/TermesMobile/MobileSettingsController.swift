@@ -3,7 +3,7 @@ import SnapKit
 import Combine
 import TermesKit
 
-final class MobileSettingsController: UITableViewController {
+final class MobileSettingsController: UITableViewController, UIColorPickerViewControllerDelegate {
   private let appearance: AppearanceStore
   private var subscriptions = Set<AnyCancellable>()
   private let theme = UISegmentedControl(items: ["系统", "浅色", "深色"])
@@ -39,7 +39,7 @@ final class MobileSettingsController: UITableViewController {
   }
 
   override func numberOfSections(in tableView: UITableView) -> Int { appearance.error == nil ? 3 : 4 }
-  override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 1 || section == 2 ? 3 : 1 }
+  override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 1 ? 5 : section == 2 ? 3 : 1 }
   override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { ["界面", "终端", "使用提示", "保存状态"][section] }
   override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
     let cell = UITableViewCell(style: .value1, reuseIdentifier: nil)
@@ -54,17 +54,27 @@ final class MobileSettingsController: UITableViewController {
         cell.textLabel?.text = "配色"; cell.detailTextLabel?.text = appearance.settings.terminalTheme.displayName
         cell.accessoryType = .disclosureIndicator; cell.selectionStyle = .default
       case 1:
+        cell.textLabel?.text = "字体"; cell.detailTextLabel?.text = appearance.settings.terminalFontName ?? "系统等宽"
+        cell.accessoryType = .disclosureIndicator; cell.selectionStyle = .default
+        cell.accessibilityIdentifier = "settings.font"
+      case 2:
         fontSize.value = appearance.settings.terminalFontSize
         fontSizeLabel.text = "字号 · \(Int(fontSize.value)) pt"
         let stack = MobileUI.stack([fontSizeLabel, fontSize], axis: .horizontal)
         stack.alignment = .center; stack.distribution = .equalSpacing
         cell.contentView.addSubview(stack)
         stack.snp.makeConstraints { $0.edges.equalToSuperview().inset(UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)) }
+      case 3:
+        cell.textLabel?.text = "文字颜色"
+        cell.detailTextLabel?.text = appearance.settings.terminalTextColor.map { String(format: "#%06X", $0) } ?? "主题默认"
+        cell.accessoryType = .disclosureIndicator; cell.selectionStyle = .default
+        cell.accessibilityIdentifier = "settings.textColor"
       default:
         let preview = MobileUI.label("user@server:~ $ ls -la\nDocuments  projects  README.md")
-        preview.font = .monospacedSystemFont(ofSize: appearance.settings.terminalFontSize, weight: .regular)
+        preview.font = appearance.settings.terminalFontName.flatMap { UIFont(name: $0, size: appearance.settings.terminalFontSize) }
+          ?? .monospacedSystemFont(ofSize: appearance.settings.terminalFontSize, weight: .regular)
         let palette = appearance.settings.terminalTheme.palette(effectiveDark: traitCollection.userInterfaceStyle == .dark)
-        preview.textColor = color(palette.foreground)
+        preview.textColor = color(TerminalColor(appearance.settings.terminalTextColor ?? palette.foreground.rgb))
         cell.contentView.backgroundColor = color(palette.background)
         cell.contentView.addSubview(preview)
         preview.snp.makeConstraints { $0.edges.equalToSuperview().inset(16) }
@@ -86,7 +96,36 @@ final class MobileSettingsController: UITableViewController {
     tableView.deselectRow(at: indexPath, animated: true)
     if indexPath.section == 1 && indexPath.row == 0 {
       navigationController?.pushViewController(MobileTerminalThemeController(appearance: appearance), animated: true)
+    } else if indexPath.section == 1 && indexPath.row == 1 {
+      let menu = UIAlertController(title: "终端字体", message: nil, preferredStyle: .actionSheet)
+      let fonts: [(String, String?)] = [("系统等宽", nil), ("Source Code Pro", "SourceCodePro-Regular"), ("Menlo", "Menlo-Regular"), ("Courier New", "CourierNewPSMT")]
+      for (title, name) in fonts where name == nil || UIFont(name: name!, size: 13) != nil {
+        menu.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in self?.update { $0.terminalFontName = name } })
+      }
+      menu.addAction(UIAlertAction(title: "取消", style: .cancel))
+      menu.popoverPresentationController?.sourceView = tableView; menu.popoverPresentationController?.sourceRect = tableView.rectForRow(at: indexPath)
+      present(menu, animated: true)
+    } else if indexPath.section == 1 && indexPath.row == 3 {
+      let menu = UIAlertController(title: "文字颜色", message: nil, preferredStyle: .actionSheet)
+      menu.addAction(UIAlertAction(title: "主题默认", style: .default) { [weak self] _ in self?.update { $0.terminalTextColor = nil } })
+      menu.addAction(UIAlertAction(title: "选择颜色", style: .default) { [weak self] _ in
+        guard let self else { return }
+        let picker = UIColorPickerViewController(); picker.delegate = self; picker.supportsAlpha = false
+        let palette = appearance.settings.terminalTheme.palette(effectiveDark: traitCollection.userInterfaceStyle == .dark)
+        picker.selectedColor = color(TerminalColor(appearance.settings.terminalTextColor ?? palette.foreground.rgb))
+        present(picker, animated: true)
+      })
+      menu.addAction(UIAlertAction(title: "取消", style: .cancel))
+      menu.popoverPresentationController?.sourceView = tableView; menu.popoverPresentationController?.sourceRect = tableView.rectForRow(at: indexPath)
+      present(menu, animated: true)
     }
+  }
+  func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    guard viewController.selectedColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return }
+    func byte(_ value: CGFloat) -> UInt32 { UInt32(max(0, min(255, (value * 255).rounded()))) }
+    let rgb = byte(red) << 16 | byte(green) << 8 | byte(blue)
+    update { $0.terminalTextColor = rgb }
   }
   private func color(_ color: TerminalColor) -> UIColor {
     UIColor(red: Double(color.red) / 255, green: Double(color.green) / 255, blue: Double(color.blue) / 255, alpha: color.alpha)

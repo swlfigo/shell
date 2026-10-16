@@ -36,7 +36,19 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
     tableView.register(MobileSessionCell.self, forCellReuseIdentifier: "session")
     let add = UIBarButtonItem(systemItem: .add, primaryAction: UIAction { [weak self] _ in self?.editHost(nil) })
     add.accessibilityLabel = "新建主机"; add.accessibilityIdentifier = "hosts.add"
-    navigationItem.rightBarButtonItem = add
+    let library = UIBarButtonItem(image: UIImage(systemName: "square.grid.2x2"), primaryAction: UIAction { [weak self] _ in
+      guard let self else { return }; presentSheet(MobileLibraryController(workspace: workspace))
+    })
+    library.accessibilityLabel = "资料库"; library.accessibilityIdentifier = "library.open"
+    var buttons = [add, library]
+    if UIApplication.shared.supportsMultipleScenes {
+      let window = UIBarButtonItem(image: UIImage(systemName: "rectangle.badge.plus"), primaryAction: UIAction { _ in
+        UIApplication.shared.requestSceneSessionActivation(nil, userActivity: nil, options: nil)
+      })
+      window.accessibilityLabel = "新建窗口"; window.accessibilityIdentifier = "workspace.newWindow"
+      buttons.append(window)
+    }
+    navigationItem.rightBarButtonItems = buttons
     let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), primaryAction: UIAction { [weak self] _ in self?.showSettings() })
     settings.accessibilityLabel = "设置"; settings.accessibilityIdentifier = "settings.open"
     navigationItem.leftBarButtonItem = settings
@@ -167,8 +179,8 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
   }
 
   private func close(_ session: MobileSession) {
-    guard session.manager.state.isActive else { workspace.close(session); return }
-    let alert = UIAlertController(title: "关闭会话？", message: "此操作会断开 SSH 连接。", preferredStyle: .alert)
+    guard session.hasUnfinishedWork else { workspace.close(session); return }
+    let alert = UIAlertController(title: "关闭会话？", message: "此操作会断开 SSH、停止端口转发并取消此会话的文件传输。", preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     alert.addAction(UIAlertAction(title: "断开并关闭", style: .destructive) { [weak self] _ in self?.workspace.close(session) })
     present(alert, animated: true)

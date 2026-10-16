@@ -260,6 +260,115 @@ final class MobileNavigationTests: XCTestCase {
     XCTAssertTrue(keyboard.isEnabled)
   }
 
+  func testLibrarySavesSnippetsAndOfflineForwardRules() {
+    addHost(name: "Library host")
+    createSnippet()
+    app.buttons["library.open"].tap()
+    app.cells["library.0.1"].tap()
+    app.cells["forwardHost.Library host"].tap()
+    XCTAssertTrue(app.buttons["forwards.add"].waitForExistence(timeout: 3))
+    app.buttons["forwards.add"].tap()
+    let port = app.textFields["forwardEditor.localPort"]
+    port.tap(); port.typeText("18080")
+    let target = app.textFields["forwardEditor.targetPort"]
+    target.tap(); target.typeText("8080")
+    app.buttons["forwardEditor.save"].tap()
+    let forward = app.cells["forward.18080"]
+    XCTAssertTrue(forward.waitForExistence(timeout: 3))
+    forward.tap()
+    XCTAssertFalse(app.buttons["启动"].isEnabled)
+    if app.buttons["取消"].exists { app.buttons["取消"].tap() }
+    else { app.navigationBars.staticTexts.firstMatch.tap() }
+    attachScreenshot("未连接时保存端口转发规则")
+    app.terminate(); app.launchEnvironment["TERMES_UI_TEST_RESET"] = "0"; app.launch()
+    app.buttons["library.open"].tap(); app.cells["library.0.2"].tap()
+    XCTAssertTrue(app.cells["snippet.Greeting"].waitForExistence(timeout: 3))
+    attachScreenshot("移动端常用命令资料库")
+    app.buttons["完成"].tap()
+    app.buttons["library.open"].tap(); app.cells["library.0.1"].tap(); app.cells["forwardHost.Library host"].tap()
+    XCTAssertTrue(app.cells["forward.18080"].waitForExistence(timeout: 3))
+    app.cells["forwards.connection"].tap()
+    XCTAssertTrue(app.buttons["terminal.reconnect"].waitForExistence(timeout: 12))
+  }
+
+  func testSplitLayoutAndSessionRestoration() {
+    addHost(name: "Split host")
+    app.cells["host.Split host"].tap()
+    XCTAssertTrue(app.buttons["terminal.reconnect"].waitForExistence(timeout: 12))
+    app.buttons["terminal.menu"].tap(); app.buttons["复制到新标签"].tap()
+    XCTAssertTrue(app.buttons["terminal.reconnect"].waitForExistence(timeout: 12))
+    app.buttons["terminal.menu"].tap(); app.buttons["合并到右侧分屏"].tap()
+    app.collectionViews.buttons["Split host"].firstMatch.tap()
+    let paneTabs = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'paneTab.'"))
+    XCTAssertEqual(paneTabs.count, 2)
+    paneTabs.element(boundBy: 0).tap()
+    attachScreenshot("移动端分屏工作区")
+    app.terminate(); app.launchEnvironment["TERMES_UI_TEST_RESET"] = "0"; app.launch()
+    XCTAssertTrue(app.buttons["terminal.reconnect"].firstMatch.waitForExistence(timeout: 5))
+    XCTAssertEqual(paneTabs.count, 2)
+    XCTAssertFalse(app.buttons["hostTrust.accept"].exists)
+    attachScreenshot("重启后恢复布局并等待手动连接")
+  }
+
+  func testSSHSFTPTextEditingPermissionsDownloadAndSnippetInsertion() throws {
+    guard let value = ProcessInfo.processInfo.environment["TERMES_SSH_TEST_PORT"], let port = Int(value), port > 0 else {
+      throw XCTSkip("Set TERMES_SSH_TEST_PORT to run against the optional local SSH fixture.")
+    }
+    addHost(name: "File server", port: String(port)); createSnippet()
+    app.cells["host.File server"].tap()
+    XCTAssertTrue(app.buttons["hostTrust.accept"].waitForExistence(timeout: 10)); app.buttons["hostTrust.accept"].tap()
+    expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["terminal.keyboard"])
+    waitForExpectations(timeout: 10)
+    app.buttons["terminal.menu"].tap(); app.buttons["文件"].tap()
+    let file = app.cells["remoteFile.README.txt"]
+    XCTAssertTrue(file.waitForExistence(timeout: 10)); file.tap(); app.buttons["编辑文本"].tap()
+    let editor = app.textViews["remoteEditor.text"]
+    waitForMetric(editor, containing: "Termes SFTP fixture")
+    editor.tap(); editor.typeText("\nmobile-sftp-edited")
+    app.buttons["remoteEditor.save"].tap()
+    XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '已保存到远端'")).firstMatch.waitForExistence(timeout: 10))
+    attachScreenshot("移动端远端文本编辑")
+    app.buttons["关闭"].tap()
+    file.tap(); app.buttons["权限"].tap()
+    let octal = app.textFields["permissions.octal"]
+    XCTAssertTrue(octal.waitForExistence(timeout: 5))
+    expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["permissions.apply"])
+    waitForExpectations(timeout: 10)
+    octal.tap(); octal.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4) + "0600")
+    app.buttons["permissions.apply"].tap()
+    XCTAssertTrue(file.waitForExistence(timeout: 10)); file.tap(); app.buttons["下载到本机"].tap()
+    let transfer = app.cells["transfer.README.txt"]
+    let completed = transfer.staticTexts.matching(NSPredicate(format: "label CONTAINS '已完成'")).firstMatch
+    XCTAssertTrue(completed.waitForExistence(timeout: 15))
+    attachScreenshot("移动端 SFTP 下载队列")
+    app.buttons["完成"].tap()
+    app.buttons["terminal.menu"].tap(); app.buttons["插入常用命令"].tap()
+    app.cells["snippet.Greeting"].tap()
+    let parameter = app.textFields["snippetParameter.name"]
+    parameter.tap(); parameter.typeText("mobile-ssh-ok")
+    waitForMetric(app.textViews["snippet.preview"], containing: "echo mobile-ssh-ok")
+    app.buttons["snippet.insert"].tap()
+    XCTAssertTrue(app.buttons["terminal.keyboard"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.keyboards.firstMatch.exists)
+    app.typeText("\n")
+    attachScreenshot("参数化命令插入保留终端连接")
+  }
+
+  private func createSnippet() {
+    app.buttons["library.open"].tap(); app.cells["library.0.2"].tap(); app.buttons["snippets.add"].tap()
+    let name = app.textFields["snippetEditor.name"]
+    name.tap(); name.typeText("Greeting")
+    let group = app.textFields["snippetEditor.group"]
+    group.tap(); group.typeText("Operations")
+    let command = app.textViews["snippetEditor.command"]
+    command.tap(); command.typeText("echo {{name}}")
+    let parameters = app.switches["snippetEditor.parameters"]
+    if !parameters.isHittable { app.scrollViews.firstMatch.swipeUp() }
+    parameters.tap(); app.buttons["snippetEditor.save"].tap()
+    XCTAssertTrue(app.cells["snippet.Greeting"].waitForExistence(timeout: 3))
+    app.buttons["完成"].tap()
+  }
+
   private func revealMonitorElement(_ element: XCUIElement, in scrollView: XCUIElement) {
     for _ in 0..<6 {
       if element.isHittable,

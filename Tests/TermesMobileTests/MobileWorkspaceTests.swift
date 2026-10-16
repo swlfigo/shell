@@ -119,9 +119,16 @@ final class MobileWorkspaceTests: XCTestCase {
     let controller = session.terminalController
     controller.terminal.feed(text: "before theme change")
     var settings = AppearanceSettings(); settings.terminalFontSize = 18; settings.terminalTheme = .flexokiLight
+    settings.terminalFontName = "SourceCodePro-Regular"; settings.terminalTextColor = 0x336699
     controller.apply(settings, dark: false)
     XCTAssertTrue(session.terminalController === controller)
     XCTAssertEqual(controller.terminal.font.pointSize, 18)
+    XCTAssertEqual(controller.terminal.font.fontName, "SourceCodePro-Regular")
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    XCTAssertTrue(controller.terminal.nativeForegroundColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+    XCTAssertEqual(red, 0.2, accuracy: 0.001)
+    XCTAssertEqual(green, 0.4, accuracy: 0.001)
+    XCTAssertEqual(blue, 0.6, accuracy: 0.001)
     XCTAssertTrue(controller.terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true).contains("before theme change") == true)
   }
 
@@ -135,6 +142,121 @@ final class MobileWorkspaceTests: XCTestCase {
     workspace.close(session)
     XCTAssertFalse(monitor.isOpen)
     XCTAssertEqual(monitor.state, .closed)
+  }
+
+  func testWorkspaceRestoresSplitAndFocusWithoutOpeningConnectionsOrPersistingSecrets() throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile)); first.disconnect()
+    let second = try XCTUnwrap(workspace.open(profile, newSession: true)); second.disconnect()
+    workspace.merge(second, beside: first, edge: .right)
+    guard case .split(let splitID, _, _, _) = workspace.layout.selectedTab?.root else { return XCTFail("expected split") }
+    workspace.setFractions([0.3, 0.7], split: splitID)
+    workspace.toggleMaximize(second)
+    let savedLayout = workspace.layout
+    let data = try Data(contentsOf: directory.appendingPathComponent("workspace.json"))
+    XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("local-test-password"))
+
+    let restored = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+    XCTAssertEqual(restored.layout, savedLayout)
+    XCTAssertEqual(restored.selectedSessionID, second.id)
+    XCTAssertEqual(restored.sessions.map(\.id), [first.id, second.id])
+    XCTAssertTrue(restored.sessions.allSatisfy { $0.manager.state == .idle && $0.manager.currentConfig == nil })
+    XCTAssertTrue(restored.sessions.allSatisfy { $0.fileBrowser == nil })
+    restored.detach(try XCTUnwrap(restored.selectedSession))
+    XCTAssertEqual(restored.layout.tabs.count, 2)
+    XCTAssertEqual(restored.layout.selectedTab?.paneIds, [second.id])
+    for session in restored.sessions { restored.close(session) }
+  }
+
+  func testClosingFocusedSplitKeepsItsNeighborSelected() throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile)); first.disconnect()
+    let second = try XCTUnwrap(workspace.open(profile, newSession: true)); second.disconnect()
+    workspace.merge(second, beside: first, edge: .bottom)
+    workspace.close(second)
+    XCTAssertEqual(workspace.selectedSessionID, first.id)
+    XCTAssertEqual(workspace.layout.selectedTab?.root, .pane(first.id))
+    XCTAssertEqual(workspace.layout.allPaneIds, workspace.sessions.map(\.id))
+  }
+
+  func testRestoredSessionDoesNotSilentlyFollowEditedDestination() throws {
+    let original = try workspace.save(draft())
+    let session = try XCTUnwrap(workspace.open(original)); session.disconnect()
+    var edit = MobileHostDraft(profile: original); edit.hostname = "127.0.0.2"
+    _ = try workspace.save(edit)
+    let restored = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+    let old = try XCTUnwrap(restored.selectedSession)
+    XCTAssertTrue(old.address.contains("127.0.0.1"))
+    restored.reconnect(old)
+    XCTAssertEqual(restored.error, MobileValidationError.profileChanged.errorDescription)
+    XCTAssertEqual(old.manager.state, .idle)
+    restored.close(old)
+  }
+
+  func testUnreadableWorkspaceIsProtectedUntilExplicitSaveAndBackup() throws {
+    let url = directory.appendingPathComponent("workspace.json")
+    let original = Data("invalid workspace".utf8); try original.write(to: url)
+    let restored = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+    XCTAssertNotNil(restored.error)
+    restored.persistWorkspace()
+    XCTAssertEqual(try Data(contentsOf: url), original)
+    restored.persistWorkspace(replacingUnreadable: true)
+    let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+      .filter { $0.lastPathComponent.hasPrefix("workspace-backup-") }
+    XCTAssertEqual(backups.count, 1)
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(backups.first)), original)
+    XCTAssertNotEqual(try Data(contentsOf: url), original)
+  }
+
+  func testOfflineForwardRulesAndSnippetsPersistWithoutCredentials() async throws {
+    let profile = try workspace.save(draft())
+    let model = try await workspace.forwardingManager(for: profile)
+    let config = LocalForwardConfiguration(localPort: 18080, targetHost: "127.0.0.1", targetPort: 8080)
+    _ = try model.save(configuration: config)
+    XCTAssertFalse(model.isConnected)
+    let snippet = try workspace.snippets.save(name: "Deploy", command: "echo {{env}}", group: "Operations", usesParameters: true)
+    let restored = MobileWorkspace(directory: directory, secrets: InMemorySecretStore())
+    let offline = try await restored.forwardingManager(for: profile)
+    XCTAssertEqual(offline.rules.first?.configuration, config)
+    XCTAssertEqual(offline.rules.first?.state, .stopped)
+    XCTAssertEqual(try restored.snippets.all(), [snippet])
+    XCTAssertTrue(restored.sessions.isEmpty)
+  }
+
+  func testFileBrowserBelongsToSessionAndClosesWithIt() throws {
+    let profile = try workspace.save(draft())
+    let session = try XCTUnwrap(workspace.open(profile)); session.disconnect()
+    let browser = session.files()
+    XCTAssertTrue(session.files() === browser)
+    XCTAssertFalse(browser.isConnected)
+    workspace.close(session)
+    XCTAssertFalse(browser.isConnected)
+    XCTAssertEqual(browser.status, "文件面板已关闭")
+  }
+
+  func testMovingBetweenWindowsPreservesTerminalAndBothSavedLayouts() throws {
+    let other = MobileWorkspace(sharing: workspace, windowID: UUID())
+    XCTAssertTrue(other.profiles === workspace.profiles)
+    XCTAssertTrue(other.appearance === workspace.appearance)
+    let profile = try workspace.save(draft())
+    XCTAssertEqual(other.hosts.first?.id, profile.id)
+    let session = try XCTUnwrap(workspace.open(profile)); session.disconnect()
+    let terminal = session.terminalController
+    terminal.terminal.feed(text: "moving output")
+    workspace.transfer(session, to: other)
+    XCTAssertTrue(workspace.sessions.isEmpty)
+    XCTAssertTrue(other.selectedSession === session)
+    XCTAssertTrue(other.selectedSession?.terminalController === terminal)
+    XCTAssertTrue(terminal.terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true).contains("moving output") == true)
+    let saved = try JSONDecoder().decode(WorkspaceSnapshot.self, from: Data(contentsOf: directory.appendingPathComponent("workspace.json")))
+    try saved.validate()
+    XCTAssertEqual(saved.windows.count, 2)
+    XCTAssertTrue(saved.windows.first(where: { $0.id == workspace.windowID })?.panes.isEmpty == true)
+    XCTAssertEqual(saved.windows.first(where: { $0.id == other.windowID })?.panes.map(\.id), [session.id])
+    other.discardWindow()
+    XCTAssertTrue(other.sessions.isEmpty)
+    let remaining = try JSONDecoder().decode(WorkspaceSnapshot.self, from: Data(contentsOf: directory.appendingPathComponent("workspace.json")))
+    XCTAssertEqual(remaining.windows.map(\.id), [workspace.windowID])
   }
 }
 

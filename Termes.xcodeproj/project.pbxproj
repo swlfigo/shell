@@ -108,6 +108,16 @@
 		F3254A90C5A7F74197076B74 /* Kanagawa-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D51028048BC9017090BD6464 /* Kanagawa-LICENSE.txt */; };
 		FA003E69394E43BCDF431F30 /* MobileVaultsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7742D74B4DE21F69BF93E3E6 /* MobileVaultsController.swift */; };
 		FF10BC33E8635CEFF41BF064 /* MainWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81E213065256B9B89EF6DB76 /* MainWindowController.swift */; };
+		4D6F6907AD0AF7F97F3F98D4 /* MobileSnippetsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AB43272CFB23CB9B7EFF486 /* MobileSnippetsController.swift */; };
+		6AD9D62AADA73ECE4841EAFB /* MobileForwardingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A34759E68249209BDA93B5 /* MobileForwardingController.swift */; };
+		CB26037753F80FF918F30088 /* MobileFilesController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD2FC38AC80EAE9DC4ECDA04 /* MobileFilesController.swift */; };
+		547A5DB1F781EC93389719A6 /* MobileRemoteEditorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56DA0E4D538E41A570D4D48D /* MobileRemoteEditorController.swift */; };
+		54B9F91A79FCBF84F1DB32DB /* MobileLibraryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C46E50EFDDF9CCBBD182FE /* MobileLibraryController.swift */; };
+		5AA8BB9F41F0D6BDC102F8C2 /* MobileWorkspaceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FBEA1662BDB1B6EE69A0C0C /* MobileWorkspaceController.swift */; };
+		3C7C275A4F5A55DC637ED01A /* SourceCodePro-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 0A8A03CB7C082EE6910383FC /* SourceCodePro-Regular.otf */; };
+		5434F45A706456B85E85DAA3 /* SourceCodePro-Bold.otf in Resources */ = {isa = PBXBuildFile; fileRef = 0E209C709F433208BB8E9EC9 /* SourceCodePro-Bold.otf */; };
+		9B6846A170950C5BF7E00FC6 /* SourceCodePro-It.otf in Resources */ = {isa = PBXBuildFile; fileRef = BA4E17B04892132E32AA5E8A /* SourceCodePro-It.otf */; };
+		70CE6B31E347FE4FBA38FCBE /* SourceCodePro-BoldIt.otf in Resources */ = {isa = PBXBuildFile; fileRef = D816B45359729E78915D4A69 /* SourceCodePro-BoldIt.otf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -256,6 +266,12 @@
 		EDBC01000000000000000013 /* VaultForwardingViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultForwardingViewController.swift; sourceTree = "<group>"; };
 		EE198BF7F524CD8295618D58 /* MobileRootController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MobileRootController.swift; sourceTree = "<group>"; };
 		F05602D2F401F531FBEA1032 /* KeyManagerViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyManagerViewController.swift; sourceTree = "<group>"; };
+		3AB43272CFB23CB9B7EFF486 /* MobileSnippetsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSnippetsController.swift; sourceTree = "<group>"; };
+		C4A34759E68249209BDA93B5 /* MobileForwardingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileForwardingController.swift; sourceTree = "<group>"; };
+		CD2FC38AC80EAE9DC4ECDA04 /* MobileFilesController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileFilesController.swift; sourceTree = "<group>"; };
+		56DA0E4D538E41A570D4D48D /* MobileRemoteEditorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileRemoteEditorController.swift; sourceTree = "<group>"; };
+		53C46E50EFDDF9CCBBD182FE /* MobileLibraryController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileLibraryController.swift; sourceTree = "<group>"; };
+		6FBEA1662BDB1B6EE69A0C0C /* MobileWorkspaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileWorkspaceController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -490,6 +506,12 @@
 			isa = PBXGroup;
 			children = (
 				DA1A62212653CF57835A4EB9 /* MobileApp.swift */,
+				6FBEA1662BDB1B6EE69A0C0C /* MobileWorkspaceController.swift */,
+				53C46E50EFDDF9CCBBD182FE /* MobileLibraryController.swift */,
+				56DA0E4D538E41A570D4D48D /* MobileRemoteEditorController.swift */,
+				CD2FC38AC80EAE9DC4ECDA04 /* MobileFilesController.swift */,
+				C4A34759E68249209BDA93B5 /* MobileForwardingController.swift */,
+				3AB43272CFB23CB9B7EFF486 /* MobileSnippetsController.swift */,
 				84146923B86011E74F482185 /* MobileTerminalController.swift */,
 				A6DA7163E7FA697DEF57FBFE /* MobileWorkspace.swift */,
 				864AF0177ACA67906D7F5232 /* Assets.xcassets */,
@@ -722,6 +744,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				22FF97BC8A1F510C3F8E4161 /* Assets.xcassets in Resources */,
+				70CE6B31E347FE4FBA38FCBE /* SourceCodePro-BoldIt.otf in Resources */,
+				9B6846A170950C5BF7E00FC6 /* SourceCodePro-It.otf in Resources */,
+				5434F45A706456B85E85DAA3 /* SourceCodePro-Bold.otf in Resources */,
+				3C7C275A4F5A55DC637ED01A /* SourceCodePro-Regular.otf in Resources */,
 				2BDF3851D9382F4F6319E48E /* Flexoki-LICENSE.txt in Resources */,
 				AF12FA1224C0A7A67554C528 /* Kanagawa-LICENSE.txt in Resources */,
 				2CF3F51B3831D6771B14F4D9 /* SnapKit-LICENSE.txt in Resources */,
@@ -813,6 +839,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				43FC8D8355468F42D14CF409 /* MobileApp.swift in Sources */,
+				5AA8BB9F41F0D6BDC102F8C2 /* MobileWorkspaceController.swift in Sources */,
+				54B9F91A79FCBF84F1DB32DB /* MobileLibraryController.swift in Sources */,
+				547A5DB1F781EC93389719A6 /* MobileRemoteEditorController.swift in Sources */,
+				CB26037753F80FF918F30088 /* MobileFilesController.swift in Sources */,
+				6AD9D62AADA73ECE4841EAFB /* MobileForwardingController.swift in Sources */,
+				4D6F6907AD0AF7F97F3F98D4 /* MobileSnippetsController.swift in Sources */,
 				3EF1165110A80058D678C261 /* MobileTerminalController.swift in Sources */,
 				D9E398F4971B467AF4D3FA2C /* MobileWorkspace.swift in Sources */,
 				5CEC7D52B0C48970C36365B1 /* MobileConnectionProgressController.swift in Sources */,

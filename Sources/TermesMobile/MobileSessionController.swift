@@ -5,7 +5,9 @@ import TermesKit
 
 final class MobileSessionController: UIViewController {
   private let workspace: MobileWorkspace
-  private let session: MobileSession
+  let session: MobileSession
+  var onNavigationChange: (() -> Void)?
+  var showsSessionTabs = true
   private var subscriptions = Set<AnyCancellable>()
   private let tabsScroll = UIScrollView()
   private let tabs = MobileUI.stack(axis: .horizontal, spacing: 8)
@@ -20,7 +22,7 @@ final class MobileSessionController: UIViewController {
   private var keyboardButton: UIBarButtonItem!
   private var monitorButton: UIBarButtonItem!
   private var menuButton: UIBarButtonItem!
-  private var hasConnected = false
+  private var hasConnected: Bool { session.hasConnected }
 
   init(workspace: MobileWorkspace, session: MobileSession) {
     self.workspace = workspace; self.session = session
@@ -79,6 +81,9 @@ final class MobileSessionController: UIViewController {
     }
 
     let terminal = session.terminalController
+    if terminal.parent != nil {
+      terminal.willMove(toParent: nil); terminal.view.removeFromSuperview(); terminal.removeFromParent()
+    }
     addChild(terminal)
     terminalContainer.addSubview(terminal.view)
     terminal.view.snp.makeConstraints { $0.edges.equalToSuperview() }
@@ -121,7 +126,7 @@ final class MobileSessionController: UIViewController {
 
   private func updateTabs(_ sessions: [MobileSession]) {
     tabs.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    tabsScroll.isHidden = sessions.count < 2
+    tabsScroll.isHidden = !showsSessionTabs || sessions.count < 2
     for item in sessions {
       let button = MobileUI.button(item.name, filled: item.id == session.id, id: "sessionTab.\(item.name)") { [weak self] in self?.workspace.selectedSessionID = item.id }
       tabs.addArrangedSubview(button)
@@ -133,7 +138,6 @@ final class MobileSessionController: UIViewController {
   }
 
   private func render(_ state: SessionManager.State) {
-    if state == .connected { hasConnected = true }
     statusDot.backgroundColor = state.mobileColor; statusLabel.text = state.displayText
     keyboardButton.isEnabled = state == .connected
     disconnectedBanner.isHidden = state.isActive || !hasConnected
@@ -195,8 +199,51 @@ final class MobileSessionController: UIViewController {
   }
 
   private func updateMenu(_ state: SessionManager.State) {
-    var actions = [UIAction(title: "连接详情", image: UIImage(systemName: "list.bullet.rectangle")) { [weak self] _ in self?.showProgress() }]
+    var actions: [UIMenuElement] = [UIAction(title: "连接详情", image: UIImage(systemName: "list.bullet.rectangle")) { [weak self] _ in self?.showProgress() }]
     actions.append(UIAction(title: "服务器监控", image: UIImage(systemName: "chart.xyaxis.line")) { [weak self] _ in self?.showMonitor() })
+    actions.append(UIAction(title: "文件", image: UIImage(systemName: "folder")) { [weak self] _ in
+      guard let self else { return }; session.terminalController.hideKeyboard()
+      presentSheet(MobileFilesController(model: session.files()))
+    })
+    actions.append(UIAction(title: "端口转发", image: UIImage(systemName: "arrow.left.arrow.right")) { [weak self] _ in
+      guard let self else { return }; session.terminalController.hideKeyboard()
+      presentSheet(MobileForwardingController(model: session.manager.portForwards, name: session.name))
+    })
+    actions.append(UIAction(title: "插入常用命令", image: UIImage(systemName: "text.insert")) { [weak self] _ in
+      guard let self else { return }; session.terminalController.hideKeyboard()
+      presentSheet(MobileSnippetsController(store: workspace.snippets, session: session))
+    })
+    actions.append(UIAction(title: "复制到新标签", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+      guard let self else { return }; workspace.duplicate(session)
+    })
+    if workspace.layout.tab(containing: session.id)?.isWorkspace == true {
+      actions.append(UIAction(title: "最大化或还原窗格", image: UIImage(systemName: "arrow.up.left.and.arrow.down.right")) { [weak self] _ in
+        guard let self else { return }; workspace.toggleMaximize(session)
+      })
+      actions.append(UIAction(title: "移到独立标签", image: UIImage(systemName: "rectangle.on.rectangle")) { [weak self] _ in
+        guard let self else { return }; workspace.detach(session)
+      })
+    }
+    let candidates = workspace.sessions.filter { $0.id != session.id && workspace.layout.tab(containing: $0.id)?.isWorkspace == false }
+    for edge in [PaneEdge.right, .bottom] where !candidates.isEmpty {
+      let choices = candidates.map { item in
+        UIAction(title: item.name) { [weak self] _ in
+          guard let self else { return }; workspace.merge(item, beside: session, edge: edge)
+        }
+      }
+      actions.append(UIMenu(title: edge == .right ? "合并到右侧分屏" : "合并到下方分屏", children: choices))
+    }
+    if let app = UIApplication.shared.delegate as? MobileAppDelegate {
+      let windows = app.otherWorkspaces(than: workspace)
+      if !windows.isEmpty {
+        let choices = windows.enumerated().map { index, destination in
+          UIAction(title: "窗口 \(index + 1)：\(destination.selectedSession?.name ?? "空白工作区")") { [weak self] _ in
+            guard let self else { return }; workspace.transfer(session, to: destination)
+          }
+        }
+        actions.append(UIMenu(title: "移到其他窗口", children: choices))
+      }
+    }
     if case .reconnecting = state {
       actions.append(UIAction(title: "立即重试", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.session.manager.retryReconnectNow() })
     }
@@ -207,7 +254,10 @@ final class MobileSessionController: UIViewController {
     }
     actions.append(UIAction(title: "关闭会话", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in self?.closeSession() })
     menuButton.menu = UIMenu(children: actions)
+    onNavigationChange?()
   }
+
+  func refreshNavigation() { updateMenu(session.manager.state) }
 
   private func reconnect() { workspace.reconnect(session) }
   private func showMonitor() {
@@ -233,8 +283,8 @@ final class MobileSessionController: UIViewController {
     present(alert, animated: true)
   }
   @objc private func closeSession() {
-    guard session.manager.state.isActive else { workspace.close(session); return }
-    let alert = UIAlertController(title: "关闭会话？", message: "此操作会断开 SSH 连接。", preferredStyle: .alert)
+    guard session.hasUnfinishedWork else { workspace.close(session); return }
+    let alert = UIAlertController(title: "关闭会话？", message: "此操作会断开 SSH、停止端口转发并取消此会话的文件传输。", preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
     alert.addAction(UIAlertAction(title: "断开并关闭", style: .destructive) { [weak self] _ in
       guard let self else { return }; self.workspace.close(self.session)

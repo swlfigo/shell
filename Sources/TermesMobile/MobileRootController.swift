@@ -7,7 +7,7 @@ final class MobileRootController: UISplitViewController, UISplitViewControllerDe
   private let workspace: MobileWorkspace
   private let vaults: MobileVaultsController
   private let detail = UINavigationController()
-  private var sessionControllers: [UUID: MobileSessionController] = [:]
+  private lazy var sessionWorkspace = MobileWorkspaceController(workspace: workspace)
   private var subscriptions = Set<AnyCancellable>()
 
   init(workspace: MobileWorkspace) {
@@ -28,15 +28,13 @@ final class MobileRootController: UISplitViewController, UISplitViewControllerDe
     preferredPrimaryColumnWidth = 340
     setViewController(UINavigationController(rootViewController: vaults), for: .primary)
     setViewController(detail, for: .secondary)
-    showWelcome()
+    if let session = workspace.selectedSession { showSession(session) }
+    else { showWelcome() }
     vaults.onOpenSession = { [weak self] in self?.showSession($0) }
     workspace.$selectedSessionID.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] _ in
       guard let self else { return }
       if let session = self.workspace.selectedSession { self.showSession(session) }
       else { self.showWelcome(); self.show(.primary) }
-    }.store(in: &subscriptions)
-    workspace.$sessions.sink { [weak self] sessions in
-      self?.sessionControllers = self?.sessionControllers.filter { id, _ in sessions.contains { $0.id == id } } ?? [:]
     }.store(in: &subscriptions)
     workspace.$error.receive(on: RunLoop.main).sink { [weak self] _ in self?.showPendingError() }.store(in: &subscriptions)
     workspace.appearance.$settings.sink { [weak self] settings in
@@ -56,9 +54,8 @@ final class MobileRootController: UISplitViewController, UISplitViewControllerDe
   }
 
   private func showSession(_ session: MobileSession) {
-    let controller = sessionControllers[session.id] ?? MobileSessionController(workspace: workspace, session: session)
-    sessionControllers[session.id] = controller
-    if detail.topViewController !== controller { detail.setViewControllers([controller], animated: false) }
+    if detail.topViewController !== sessionWorkspace { detail.setViewControllers([sessionWorkspace], animated: false) }
+    sessionWorkspace.render()
     show(.secondary)
   }
 
