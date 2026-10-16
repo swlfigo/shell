@@ -2,7 +2,20 @@ import XCTest
 import UIKit
 import TermesKit
 import SSHCore
+@testable import SwiftTerm
 @testable import TermesMobile
+
+// Read mutable engine internals only while holding SwiftTerm's lock. Return
+// copied text/identity so no model references escape into asynchronous tests.
+@MainActor
+private func terminalIdentity(_ view: TerminalView) -> ObjectIdentifier {
+  view.withTerminal { ObjectIdentifier($0) }
+}
+
+@MainActor
+private func terminalLineText(_ view: TerminalView, row: Int) -> String? {
+  view.withTerminal { $0.getLine(row: row)?.translateToString(trimRight: true) }
+}
 
 @MainActor
 final class MobileWorkspaceTests: XCTestCase {
@@ -74,8 +87,8 @@ final class MobileWorkspaceTests: XCTestCase {
     second.disconnect()
     workspace.selectedSessionID = first.id
     XCTAssertTrue(workspace.selectedSession?.terminalController === terminal)
-    let line = terminal.terminal.getTerminal().getLine(row: 0)
-    XCTAssertTrue(line?.translateToString(trimRight: true).contains("retained output") == true)
+    let line = terminalLineText(terminal.terminal, row: 0)
+    XCTAssertTrue(line?.contains("retained output") == true)
     workspace.close(first)
     XCTAssertEqual(workspace.selectedSessionID, second.id)
     XCTAssertEqual(workspace.sessions.count, 1)
@@ -129,7 +142,7 @@ final class MobileWorkspaceTests: XCTestCase {
     XCTAssertEqual(red, 0.2, accuracy: 0.001)
     XCTAssertEqual(green, 0.4, accuracy: 0.001)
     XCTAssertEqual(blue, 0.6, accuracy: 0.001)
-    XCTAssertTrue(controller.terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true).contains("before theme change") == true)
+    XCTAssertTrue(terminalLineText(controller.terminal, row: 0)?.contains("before theme change") == true)
   }
 
   func testClosingSessionClosesItsMonitor() throws {
@@ -247,7 +260,7 @@ final class MobileWorkspaceTests: XCTestCase {
     XCTAssertTrue(workspace.sessions.isEmpty)
     XCTAssertTrue(other.selectedSession === session)
     XCTAssertTrue(other.selectedSession?.terminalController === terminal)
-    XCTAssertTrue(terminal.terminal.getTerminal().getLine(row: 0)?.translateToString(trimRight: true).contains("moving output") == true)
+    XCTAssertTrue(terminalLineText(terminal.terminal, row: 0)?.contains("moving output") == true)
     let saved = try JSONDecoder().decode(WorkspaceSnapshot.self, from: Data(contentsOf: directory.appendingPathComponent("workspace.json")))
     try saved.validate()
     XCTAssertEqual(saved.windows.count, 2)
@@ -289,7 +302,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
   func testNewOutputPreservesHistoryAndGridWhileButtonReturnsToLatestWithoutOpeningKeyboard() {
     let (manager, controller, window) = fixture()
     defer { close(controller, window: window) }
-    let terminal = controller.terminal, buffer = terminal.getTerminal()
+    let terminal = controller.terminal, buffer = terminalIdentity(terminal)
     manager.onData?(history())
     XCTAssertFalse(controller.hasUnseenOutput)
     XCTAssertTrue(controller.newOutputButton.isHidden)
@@ -298,19 +311,19 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     manager.onData?(Data())
     XCTAssertFalse(controller.hasUnseenOutput)
 
-    let topRow = buffer.getTopVisibleRow()
-    let firstLine = buffer.getLine(row: 0)?.translateToString(trimRight: true)
-    let terminalFrame = terminal.frame, rows = buffer.rows, cols = buffer.cols
+    let topRow = terminal.terminalStateSnapshot().viewportRow
+    let firstLine = terminalLineText(terminal, row: 0)
+    let terminalFrame = terminal.frame, rows = terminal.terminalDimensions.rows, cols = terminal.terminalDimensions.cols
     manager.onData?(Data("latest server output\r\n".utf8))
     controller.view.layoutIfNeeded()
 
     XCTAssertTrue(controller.hasUnseenOutput)
     XCTAssertFalse(controller.newOutputButton.isHidden)
-    XCTAssertEqual(buffer.getTopVisibleRow(), topRow)
-    XCTAssertEqual(buffer.getLine(row: 0)?.translateToString(trimRight: true), firstLine)
+    XCTAssertEqual(terminal.terminalStateSnapshot().viewportRow, topRow)
+    XCTAssertEqual(terminalLineText(terminal, row: 0), firstLine)
     XCTAssertEqual(terminal.frame, terminalFrame)
-    XCTAssertEqual(buffer.rows, rows)
-    XCTAssertEqual(buffer.cols, cols)
+    XCTAssertEqual(terminal.terminalDimensions.rows, rows)
+    XCTAssertEqual(terminal.terminalDimensions.cols, cols)
     let buttonFrame = controller.newOutputButton.convert(controller.newOutputButton.bounds, to: controller.view)
     XCTAssertTrue(controller.view.bounds.contains(buttonFrame))
     XCTAssertGreaterThanOrEqual(buttonFrame.height, 44)
@@ -331,8 +344,8 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     XCTAssertFalse(controller.hasUnseenOutput)
     XCTAssertTrue(controller.newOutputButton.isHidden)
     XCTAssertFalse(terminal.isFirstResponder, "returning to output must not open a dismissed keyboard")
-    XCTAssertTrue(terminal.getTerminal() === buffer)
-    XCTAssertTrue(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("latest server output"))
+    XCTAssertTrue(terminalIdentity(terminal) == buffer)
+    XCTAssertTrue(String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains("latest server output"))
     manager.onData?(Data("following output\r\n".utf8))
     XCTAssertEqual(terminal.scrollPosition, 1)
     XCTAssertFalse(controller.hasUnseenOutput)
@@ -354,7 +367,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     XCTAssertFalse(controller.hasUnseenOutput)
   }
 
-  func testScrollViewReachingBottomAndAlternateScreenClearTheNotice() {
+  func testScrollViewReachingBottomAndAlternateScreenClearTheNotice() async throws {
     let (manager, controller, window) = fixture()
     defer { close(controller, window: window) }
     let terminal = controller.terminal
@@ -373,6 +386,8 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     // UIScrollView gestures update contentOffset without calling TerminalViewDelegate.scrolled.
     let bottom = max(0, terminal.contentSize.height - terminal.bounds.height + terminal.adjustedContentInset.bottom)
     terminal.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+    let deadline = Date().addingTimeInterval(2)
+    while controller.hasUnseenOutput && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertEqual(terminal.scrollPosition, 1)
     XCTAssertFalse(controller.hasUnseenOutput)
     XCTAssertTrue(controller.newOutputButton.isHidden)
@@ -401,7 +416,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
   func testHiddenTerminalRetainsNoticeAndSmallLayoutsKeepItReachable() {
     let (manager, controller, window) = fixture()
     defer { close(controller, window: window) }
-    let terminal = controller.terminal, buffer = terminal.getTerminal()
+    let terminal = controller.terminal, buffer = terminalIdentity(terminal)
     manager.onData?(history())
     terminal.scroll(toPosition: 0.5)
     window.rootViewController = UIViewController()
@@ -422,7 +437,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
       XCTAssertTrue(controller.view.bounds.contains(frame))
       XCTAssertGreaterThanOrEqual(frame.height, 44)
     }
-    XCTAssertTrue(terminal.getTerminal() === buffer)
+    XCTAssertTrue(terminalIdentity(terminal) == buffer)
     controller.newOutputButton.sendActions(for: .touchUpInside)
     controller.apply(.init(terminalTheme: .light, terminalFontSize: 14), dark: false)
     controller.view.setNeedsLayout()
@@ -434,7 +449,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     let (manager, controller, window) = fixture()
     defer { close(controller, window: window) }
     controller.apply(.init(terminalFontSize: 14), dark: false)
-    let terminal = controller.terminal, model = terminal.getTerminal()
+    let terminal = controller.terminal, model = terminalIdentity(terminal)
     let expectedSegments = (0..<8).map { row in
       (0..<16).map { segment in "[行\(row)段\(segment):Ab09中文终端Wide]" }
     }
@@ -443,21 +458,23 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
 
     // Reconstruct hard lines from soft-wrapped rows, omitting only wide-cell fillers.
     func logicalLines() -> [String] {
-      var result: [String] = []
-      var row = model.buffer.totalLinesTrimmed
-      while let line = model.getScrollInvariantLine(row: row) {
-        let text = line.translateToString(trimRight: true, skipNullCellsFollowingWide: true,
-          characterProvider: { model.getCharacter(for: $0) })
-        if line.isWrapped, !result.isEmpty { result[result.count - 1] += text }
-        else { result.append(text) }
-        row += 1
+      terminal.withTerminal { model in
+        var result: [String] = []
+        var row = model.buffer.totalLinesTrimmed
+        while let line = model.getScrollInvariantLine(row: row) {
+          let text = line.translateToString(trimRight: true, skipNullCellsFollowingWide: true,
+            characterProvider: { model.getCharacter(for: $0) })
+          if line.isWrapped, !result.isEmpty { result[result.count - 1] += text }
+          else { result.append(text) }
+          row += 1
+        }
+        return result.filter { !$0.isEmpty }
       }
-      return result.filter { !$0.isEmpty }
     }
 
     func assertContents(_ phase: String) {
       let lines = logicalLines()
-      XCTAssertEqual(model.buffer.totalLinesTrimmed, 0, "\(phase): fixture must fit in scrollback")
+      XCTAssertEqual(terminal.withTerminal { $0.buffer.totalLinesTrimmed }, 0, "\(phase): fixture must fit in scrollback")
       XCTAssertEqual(lines.count, expectedSegments.count + 1, "\(phase): hard-line boundaries changed")
       for (row, expected) in expectedSegments.enumerated() {
         guard row < lines.count else { continue }
@@ -468,7 +485,7 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     }
 
     assertContents("initial portrait")
-    var columnCounts = Set([model.cols])
+    var columnCounts = Set([terminal.terminalDimensions.cols])
     for (size, fontSize) in [
       (CGSize(width: 700, height: 320), 14.0),
       (CGSize(width: 260, height: 380), 14.0),
@@ -482,8 +499,8 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
       controller.view.layoutIfNeeded()
       controller.apply(.init(terminalFontSize: fontSize), dark: false)
       controller.view.layoutIfNeeded()
-      columnCounts.insert(model.cols)
-      XCTAssertTrue(terminal.getTerminal() === model)
+      columnCounts.insert(terminal.terminalDimensions.cols)
+      XCTAssertTrue(terminalIdentity(terminal) == model)
       assertContents("\(Int(size.width)) × \(Int(size.height)), font \(Int(fontSize))")
     }
     XCTAssertGreaterThan(columnCounts.count, 2, "the test must exercise different terminal widths")

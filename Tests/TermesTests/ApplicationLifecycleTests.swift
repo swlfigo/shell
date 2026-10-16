@@ -108,7 +108,7 @@ final class ApplicationLifecycleTests: XCTestCase {
     let (main, pane) = try await open(delegate, services: services, server: server)
     let window = try XCTUnwrap(main.window)
     let terminal = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let buffer = terminal.terminalView.getTerminal(), version = pane.session.connectionVersion
+    let buffer = terminalIdentity(terminal.terminalView), version = pane.session.connectionVersion
     pane.toggleFiles(); pane.toggleMonitor()
     let files = try XCTUnwrap(pane.children.compactMap { $0 as? FileBrowserViewController }.first)
     let monitor = try XCTUnwrap(pane.monitorVC)
@@ -120,7 +120,7 @@ final class ApplicationLifecycleTests: XCTestCase {
     try await wait { if case .running = pane.session.portForwards.rules.first?.state { return true }; return false }
     main.showWindow(nil)
     pane.session.sendInput(Data("printf '%s%s\\n' 'BACKGROUND_' 'INPUT_KEPT'".utf8))
-    try await wait { String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("INPUT_KEPT") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("INPUT_KEPT") }
     let local = try localFile(bytes: 16 * 1024 * 1024), queue = files.model.transfers
     files.model.upload(local)
     XCTAssertEqual(main.unfinishedTransferCount, 1)
@@ -128,7 +128,7 @@ final class ApplicationLifecycleTests: XCTestCase {
     XCTAssertFalse(window.isVisible); XCTAssertEqual(delegate.workspace.windows.count, 1)
     XCTAssertEqual(pane.session.state, .connected); XCTAssertEqual(pane.session.connectionVersion, version)
     pane.session.sendInput(Data("\r".utf8))
-    try await wait { String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("BACKGROUND_INPUT_KEPT") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("BACKGROUND_INPUT_KEPT") }
     try await wait { queue.jobs.first?.state == .completed }
     XCTAssertEqual(main.unfinishedTransferCount, 0); XCTAssertEqual(main.activeForwardCount, 1)
     let remote = try XCTUnwrap(files.model.directory) + "/" + local.lastPathComponent
@@ -139,7 +139,7 @@ final class ApplicationLifecycleTests: XCTestCase {
     XCTAssertTrue(String(decoding: greeting, as: UTF8.self).contains("SSH-"))
     _ = delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
     XCTAssertTrue(window.isVisible); XCTAssertTrue(main.focusedPane === pane)
-    XCTAssertTrue(terminal.terminalView.getTerminal() === buffer)
+    XCTAssertTrue(terminalIdentity(terminal.terminalView) == buffer)
     XCTAssertTrue(files.model.transfers === queue); XCTAssertTrue(pane.monitorVC === monitor)
     XCTAssertEqual(monitor.model.history, history)
     window.miniaturize(nil)

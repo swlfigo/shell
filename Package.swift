@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -6,7 +6,7 @@ let package = Package(
   platforms: [.macOS(.v13), .iOS(.v17)],
   dependencies: [
     .package(path: "Packages/SSHCore"),
-    .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.20.0"),
+    .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.99.0"),
     .package(url: "https://github.com/SnapKit/SnapKit.git", from: "6.0.0"),
   ],
   targets: [

@@ -75,6 +75,13 @@ Termes 是一款面向 macOS 的 SSH 客户端。在 Vaults 中找到所有主�
 
 需要 **macOS 13 或更新版本**。项目仍在开发中，当前通过源码运行。
 
+项目以 **Swift 6.4 编译器和 Swift 6 语言模式**作为构建与验收基线，`.swift-version` 记录当前验收版本 6.4.1。包清单的 `swift-tools-version` 仅声明清单工具版本下限，编译验收仍需实际选择 6.4 编译器。先安装 [Swift.org 官方工具链](https://www.swift.org/install/macos/)，在 Xcode 中选择该工具链；命令行构建前也需选择它并核对版本：
+
+```sh
+export TOOLCHAINS='org.swift.641202610071a com.apple.dt.toolchain.XcodeDefault'
+xcrun swift --version # 应显示 Swift 6.4.1
+```
+
 1. 打开 Termes，在 **Vaults → Hosts** 点击 **新建主机**。
 2. 填写名称、主机地址、端口和用户名，选择密码或私钥；需要时设置跳板机。
 3. 保存连接并点击 **连接**，首次连接时核对服务器指纹。
@@ -114,7 +121,7 @@ Termes 是一款面向 macOS 的 SSH 客户端。在 Vaults 中找到所有主�
 
 - 提供 macOS、iPhone 和 iPad 应用（移动端需要 iOS / iPadOS 17 或更新版本）。移动端已接入主机与密钥管理、SSH 终端、SFTP、端口转发、Snippets、服务器监控和工作区恢复，详见下方说明。跨设备云同步仍在规划中。
 - 服务器状态监控目前支持 Linux。
-- 调整终端宽度时，部分中文历史日志可能出现空白或错位。查看大量中文日志时建议先固定窗口宽度；已有日志错排时，可在窗口宽度固定后新建会话并重新读取日志。
+- 中文历史日志在反复调整窗口宽度时出现空白或错位的问题，已通过升级官方 SwiftTerm 版本修复。依赖跟踪与回归验收见 [TODO](TODO.md)。
 
 ## iPhone 与 iPad
 
@@ -144,9 +151,12 @@ Termes 是一款面向 macOS 的 SSH 客户端。在 Vaults 中找到所有主�
 可以通过 Scheme 的 Test 操作运行移动端模型测试和 UI 测试，也可以使用命令行：
 
 ```sh
+SWIFT_EXEC_MANIFEST="$(xcrun --toolchain com.apple.dt.toolchain.XcodeDefault --find swiftc)" \
 xcodebuild -project Termes.xcodeproj -scheme TermesMobile \
   -destination 'platform=iOS Simulator,name=iPhone 17' test
 ```
+
+在 Xcode 26.6 中，以上变量让包清单使用 Xcode 自带的清单编译器解析，避免自定义工具链的链接器查找错误。应用、共享模块和测试源码仍使用前面选定的 Swift 6.4.1 编译器与 Swift 6 语言模式。
 
 可选的 SSH UI 集成测试使用仅监听本机的 `Tests/TermesMobileUITests/ssh_fixture.py`（需要 Python 的 `paramiko` 包）。先运行该脚本，再为上述命令加上 `TERMES_SSH_TEST_PORT=37937`，即可验证指纹确认、终端输入、屏幕旋转、会话保留、新输出提醒、服务器监控、SFTP 编辑下载及 Snippets 插入；未指定端口时会跳过这些集成测试。测试服务仅回显测试命令、模拟 Linux 监控数据，并在独立临时目录中提供 SFTP，不执行本机 shell。
 

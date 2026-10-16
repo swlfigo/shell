@@ -84,7 +84,7 @@ final class SessionToolsTests: XCTestCase {
     }
     window.setContentSize(.init(width: 1440, height: 860)); main.showWindow(nil); window.makeKeyAndOrderFront(nil)
     let terminal = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let buffer = terminal.terminalView.getTerminal(), version = pane.session.connectionVersion
+    let buffer = terminalIdentity(terminal.terminalView), version = pane.session.connectionVersion
     main.toggleSessionTools(nil)
     let tools = try XCTUnwrap(pane.toolsView), monitor = try XCTUnwrap(pane.monitorVC)
     XCTAssertEqual(tools.selectedTool, .overview); XCTAssertTrue(pane.isToolsVisible)
@@ -107,8 +107,8 @@ final class SessionToolsTests: XCTestCase {
     XCTAssertEqual(fileLocations.locationControl.selectedSegment, 1)
     fileLocations.locationControl.selectedSegment = 0; fileLocations.locationChanged()
     pane.takeFocus(); pane.session.sendInput(Data("printf 'TOOLS_%s\\n' 'INPUT_KEPT'".utf8))
-    try await wait { String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("INPUT_KEPT") }
-    XCTAssertFalse(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("TOOLS_INPUT_KEPT"))
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("INPUT_KEPT") }
+    XCTAssertFalse(String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("TOOLS_INPUT_KEPT"))
     let queue = files.model.transfers, originalChange = queue.onChange
     defer { queue.onChange = originalChange }
     var switchedDuringTransfer = false
@@ -148,7 +148,7 @@ final class SessionToolsTests: XCTestCase {
       XCTAssertTrue(pane.children.contains { $0 === files }); XCTAssertEqual(files.model.directory, remoteDirectory)
       XCTAssertEqual(queue.jobs.first?.id, job.id); XCTAssertEqual(queue.jobs.first?.state, .completed)
       XCTAssertEqual(files.table.selectedRow, row); XCTAssertEqual(fileLocations.locationControl.selectedSegment, 0)
-      XCTAssertTrue(terminal.terminalView.getTerminal() === buffer)
+      XCTAssertTrue(terminalIdentity(terminal.terminalView) == buffer)
       XCTAssertEqual(pane.session.connectionVersion, version); XCTAssertEqual(pane.session.state, .connected)
       XCTAssertTrue(monitor.model.isOpen)
       let split = try XCTUnwrap(tools.enclosingScrollView?.superview as? TerminalMonitorView)
@@ -169,7 +169,7 @@ final class SessionToolsTests: XCTestCase {
     window.setContentSize(.init(width: 1440, height: 860)); pane.selectTool(.overview); window.contentView?.layoutSubtreeIfNeeded()
     XCTAssertEqual(monitorScroll.contentView.bounds.origin.y, scrollPosition.y, accuracy: 1)
     pane.session.sendInput(Data("\r".utf8))
-    try await wait { String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("TOOLS_INPUT_KEPT") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("TOOLS_INPUT_KEPT") }
     let filesReview = ProcessInfo.processInfo.environment["TERMES_TOOLS_FILES_REVIEW"] == "1"
     if ProcessInfo.processInfo.environment["TERMES_TOOLS_VISUAL_REVIEW"] == "1" || filesReview {
       try await wait { monitor.model.history.count >= 2 }

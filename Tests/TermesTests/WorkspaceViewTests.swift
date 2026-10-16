@@ -172,20 +172,20 @@ final class WorkspaceViewTests: XCTestCase {
     }
     XCTAssertEqual(pane.label?.profileID, a.id)
     let terminal = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let terminalBuffer = terminal.terminalView.getTerminal(), version = pane.session.connectionVersion
+    let terminalBuffer = terminalIdentity(terminal.terminalView), version = pane.session.connectionVersion
     main.showVaults(nil)
     XCTAssertTrue(main.isShowingVaults); XCTAssertNil(main.focusedPane)
     XCTAssertEqual(pane.session.state, .connected)
     main.tabBar(workspace.tabBar, select: try XCTUnwrap(main.layout.selectedTabId))
     XCTAssertTrue(main.focusedPane === pane)
-    XCTAssertTrue(terminal.terminalView.getTerminal() === terminalBuffer)
+    XCTAssertTrue(terminalIdentity(terminal.terminalView) == terminalBuffer)
     XCTAssertEqual(pane.session.connectionVersion, version)
     pane.toggleFiles(); pane.toggleMonitor()
     let files = try XCTUnwrap(pane.children.compactMap { $0 as? FileBrowserViewController }.first), monitor = try XCTUnwrap(pane.monitorVC)
     try await wait { files.model.directory != nil && monitor.model.current != nil }
     main.showWindow(nil); window.makeKeyAndOrderFront(nil); pane.takeFocus()
     pane.session.sendInput(Data("printf 'UI_%s\\n' 'INPUT_PRESERVED'".utf8))
-    try await wait { String(decoding: terminalBuffer.getBufferAsData(), as: UTF8.self).contains("INPUT_PRESERVED") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("INPUT_PRESERVED") }
     main.sidebar.model.select(b.id)
     try await wait { main.sidebar.model.selectedID == b.id }
     XCTAssertTrue(main.focusedPane === pane); XCTAssertEqual(pane.label?.profileID, a.id)
@@ -194,7 +194,7 @@ final class WorkspaceViewTests: XCTestCase {
     for (theme, terminalTheme, fontName, width) in appearances {
       try services.appearance.update(.init(theme: theme, terminalTheme: terminalTheme, terminalFontSize: 15, terminalFontName: fontName, terminalTextColor: 0x40E090))
       window.setContentSize(.init(width: width, height: 760)); workspace.layoutSubtreeIfNeeded()
-      XCTAssertTrue(terminal.terminalView.getTerminal() === terminalBuffer)
+      XCTAssertTrue(terminalIdentity(terminal.terminalView) == terminalBuffer)
       XCTAssertEqual(terminal.terminalView.font.pointSize, 15)
       let actual = try XCTUnwrap(terminal.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB))
       let expected = try XCTUnwrap(terminalTheme.palette(effectiveDark: true).background.nativeColor.usingColorSpace(.sRGB))
@@ -217,7 +217,7 @@ final class WorkspaceViewTests: XCTestCase {
     }
     main.toggleSidebar(nil); workspace.layoutSubtreeIfNeeded(); main.toggleSidebar(nil); workspace.layoutSubtreeIfNeeded()
     pane.session.sendInput(Data("\r".utf8))
-    try await wait { String(decoding: terminalBuffer.getBufferAsData(), as: UTF8.self).contains("UI_INPUT_PRESERVED") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("UI_INPUT_PRESERVED") }
     XCTAssertEqual(main.sidebar.model.sessionText(for: a.id), "已连接")
     XCTAssertEqual(main.sidebar.model.sessionText(for: b.id), "未连接")
     if ProcessInfo.processInfo.environment["TERMES_WORKSPACE_VISUAL_REVIEW"] == "1" {

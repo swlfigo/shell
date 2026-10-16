@@ -19,6 +19,11 @@ final class MobileTerminalInputTests: XCTestCase {
     terminal.markedTextRange.flatMap { terminal.text(in: $0) }
   }
 
+  private func waitForOutput(_ recorder: TerminalInputRecorder) async throws {
+    let deadline = Date().addingTimeInterval(2)
+    while recorder.bytes.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+  }
+
   private func select(_ range: NSRange, inMarkedTextOf terminal: TerminalView) throws {
     let marked = try XCTUnwrap(terminal.markedTextRange)
     let start = try XCTUnwrap(terminal.position(from: marked.start, offset: range.location))
@@ -148,30 +153,34 @@ final class MobileTerminalInputTests: XCTestCase {
   }
 
   #if targetEnvironment(simulator)
-  func testPastingMultilineUnicodeSendsTheOriginalBytes() {
+  func testPastingMultilineUnicodeUsesTerminalReturnsWithoutChangingUnicode() async throws {
     let (terminal, recorder) = fixture()
     let pasteboard = UIPasteboard.general
     defer { pasteboard.items = [] }
     let payload = "echo hello 世界\n第二行 👩🏽‍💻 e\u{301}\r\n第三行\n"
     pasteboard.setItems([["public.utf8-plain-text": payload]], options: [.localOnly: true])
-    XCTAssertFalse(terminal.getTerminal().bracketedPasteMode)
+    XCTAssertFalse(terminal.terminalStateSnapshot().bracketedPasteMode)
 
     terminal.paste(nil)
+    try await waitForOutput(recorder)
 
-    XCTAssertEqual(recorder.bytes, Array(payload.utf8))
+    // Official SwiftTerm encodes LF as Enter outside bracketed-paste mode.
+    // The bracketed-paste test below must still preserve every original byte.
+    XCTAssertEqual(recorder.bytes, Array(payload.replacingOccurrences(of: "\n", with: "\r").utf8))
   }
 
-  func testBracketedPasteWrapsMultilineUnicodeExactlyOnce() {
+  func testBracketedPasteWrapsMultilineUnicodeExactlyOnce() async throws {
     let (terminal, recorder) = fixture()
     let pasteboard = UIPasteboard.general
     defer { pasteboard.items = [] }
     let payload = "first line 中文\n第二行 🌏 👩🏽‍💻\r\nlast e\u{301}\n"
     pasteboard.setItems([["public.utf8-plain-text": payload]], options: [.localOnly: true])
     terminal.feed(text: "\u{1b}[?2004h")
-    XCTAssertTrue(terminal.getTerminal().bracketedPasteMode)
+    XCTAssertTrue(terminal.terminalStateSnapshot().bracketedPasteMode)
     XCTAssertTrue(recorder.bytes.isEmpty)
 
     terminal.paste(nil)
+    try await waitForOutput(recorder)
 
     XCTAssertEqual(recorder.bytes, Array(("\u{1b}[200~" + payload + "\u{1b}[201~").utf8))
   }
@@ -179,7 +188,7 @@ final class MobileTerminalInputTests: XCTestCase {
 }
 
 @MainActor
-private final class TerminalInputRecorder: @preconcurrency TerminalViewDelegate {
+private final class TerminalInputRecorder: TerminalViewDelegate {
   var bytes: [UInt8] = []
 
   func send(source: TerminalView, data: ArraySlice<UInt8>) { bytes.append(contentsOf: data) }

@@ -1337,7 +1337,7 @@
 			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
 			requirement = {
 				kind = exactVersion;
-				version = 1.20.0;
+				version = 1.99.0;
 			};
 		};
 		F3D7F948FA41AE8F4D3419EB /* XCRemoteSwiftPackageReference "SnapKit" */ = {

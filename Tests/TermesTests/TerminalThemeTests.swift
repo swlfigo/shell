@@ -6,8 +6,16 @@ import SwiftTerm
 @testable import Termes
 
 @MainActor
-private final class PaletteProbe: @preconcurrency TerminalViewDelegate {
+private final class PaletteProbe: TerminalViewDelegate {
   var output = Data()
+  func query(_ command: String, from terminal: TerminalView) async throws -> String {
+    output = Data()
+    terminal.feed(text: command)
+    let deadline = Date().addingTimeInterval(2)
+    while output.isEmpty && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertFalse(output.isEmpty, "terminal query did not reply")
+    return String(decoding: output, as: UTF8.self)
+  }
   func send(source: TerminalView, data: ArraySlice<UInt8>) { output.append(contentsOf: data) }
   func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
   func setTerminalTitle(source: TerminalView, title: String) {}
@@ -33,12 +41,12 @@ final class TerminalThemeTests: XCTestCase {
     XCTAssertEqual(color.alphaComponent, expected.alpha, accuracy: 0.00001, file: file, line: line)
   }
 
-  func test_all_palettes_reach_terminal_ansi_queries_cursor_selection_and_font_only_changes_preserve_program_colors() throws {
+  func test_all_palettes_reach_terminal_ansi_queries_cursor_selection_and_font_only_changes_preserve_program_colors() async throws {
     _ = NSApplication.shared
     let session = SessionManager(knownHosts: KnownHostsStore(fileURL: try directory().appendingPathComponent("known_hosts")))
     let controller = TerminalViewController(session: session); _ = controller.view
     defer { controller.teardown() }
-    let terminal = controller.terminalView, buffer = terminal.getTerminal(), probe = PaletteProbe()
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal), probe = PaletteProbe()
     terminal.terminalDelegate = probe
     session.onData?(Data("retained output\r\n".utf8))
     for theme in TerminalTheme.catalog {
@@ -52,19 +60,19 @@ final class TerminalThemeTests: XCTestCase {
       try assertColor(terminal.selectedTextBackgroundColor, palette.selection)
       try assertColor(terminal.selectedTextForegroundColor, palette.selectionForeground)
       for (index, color) in palette.ansi.enumerated() {
-        probe.output = Data(); terminal.feed(text: "\u{1B}]4;\(index);?\u{7}")
+        let reply = try await probe.query("\u{1B}]4;\(index);?\u{7}", from: terminal)
         let expected = String(format: "rgb:%04x/%04x/%04x", Int(color.red) * 257, Int(color.green) * 257, Int(color.blue) * 257)
-        XCTAssertTrue(String(decoding: probe.output, as: UTF8.self).contains(expected), "ANSI \(index) of \(theme.displayName)")
+        XCTAssertTrue(reply.contains(expected), "ANSI \(index) of \(theme.displayName)")
       }
       XCTAssertEqual(terminal.font.fontName, "SourceCodePro-Regular")
-      XCTAssertTrue(terminal.getTerminal() === buffer)
-      XCTAssertTrue(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("retained output"))
+      XCTAssertTrue(terminalIdentity(terminal) == buffer)
+      XCTAssertTrue(String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains("retained output"))
     }
     controller.applyAppearance(.init(terminalTheme: .termiusDark))
     terminal.feed(text: "\u{1B}]4;1;#123456;200;#654321\u{7}")
     controller.applyAppearance(.init(terminalTheme: .termiusDark, terminalFontSize: 18, terminalFontName: "Menlo-Regular"))
-    probe.output = Data(); terminal.feed(text: "\u{1B}]4;1;?\u{7}")
-    XCTAssertTrue(String(decoding: probe.output, as: UTF8.self).contains("rgb:1212/3434/5656"), "font edits must not reset a program's OSC palette")
+    let reply = try await probe.query("\u{1B}]4;1;?\u{7}", from: terminal)
+    XCTAssertTrue(reply.contains("rgb:1212/3434/5656"), "font edits must not reset a program's OSC palette")
   }
 
   func test_missing_or_proportional_fonts_fall_back_without_overwriting_the_saved_preference() throws {
@@ -84,36 +92,36 @@ final class TerminalThemeTests: XCTestCase {
     for choice in TerminalFonts.choices() { XCTAssertTrue(TerminalFonts.resolve(name: choice.name, size: 14).isFixedPitch) }
   }
 
-  func test_custom_default_color_preserves_ansi_truecolor_osc_palette_and_terminal_buffer() throws {
+  func test_custom_default_color_preserves_ansi_truecolor_osc_palette_and_terminal_buffer() async throws {
     _ = NSApplication.shared
     let session = SessionManager(knownHosts: KnownHostsStore(fileURL: try directory().appendingPathComponent("known_hosts")))
     let controller = TerminalViewController(session: session); _ = controller.view
     defer { controller.teardown() }
-    let terminal = controller.terminalView, buffer = terminal.getTerminal(), probe = PaletteProbe()
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal), probe = PaletteProbe()
     terminal.terminalDelegate = probe
     controller.applyAppearance(.init(terminalTheme: .termiusDark))
     terminal.feed(text: "plain \u{1B}[31mred\u{1B}[0m \u{1B}[38;2;18;52;86mtrue\u{1B}[0m")
-    let cells = try XCTUnwrap(buffer.getLine(row: 0)).getData()
-    XCTAssertEqual(cells[6].attribute.fg, .ansi256(code: 1))
-    XCTAssertEqual(cells[10].attribute.fg, .trueColor(red: 18, green: 52, blue: 86))
+    let attributes = try XCTUnwrap(terminalAttributes(terminal, row: 0))
+    XCTAssertEqual(attributes[6].fg, .ansi256(code: 1))
+    XCTAssertEqual(attributes[10].fg, .trueColor(red: 18, green: 52, blue: 86))
     terminal.feed(text: "\u{1B}]4;1;#123456;200;#654321\u{7}")
     var value = AppearanceSettings(terminalTheme: .termiusDark, terminalTextColor: 0x40E090)
     controller.applyAppearance(value)
     try assertColor(terminal.nativeForegroundColor, TerminalColor(0x40E090))
-    XCTAssertTrue(terminal.getTerminal() === buffer)
-    XCTAssertEqual(try XCTUnwrap(buffer.getLine(row: 0)).getData().map(\.attribute), cells.map(\.attribute))
-    probe.output = Data(); terminal.feed(text: "\u{1B}]4;1;?\u{7}")
-    XCTAssertTrue(String(decoding: probe.output, as: UTF8.self).contains("rgb:1212/3434/5656"))
-    probe.output = Data(); terminal.feed(text: "\u{1B}]4;200;?\u{7}")
-    XCTAssertTrue(String(decoding: probe.output, as: UTF8.self).contains("rgb:6565/4343/2121"))
+    XCTAssertTrue(terminalIdentity(terminal) == buffer)
+    XCTAssertEqual(try XCTUnwrap(terminalAttributes(terminal, row: 0)), attributes)
+    var reply = try await probe.query("\u{1B}]4;1;?\u{7}", from: terminal)
+    XCTAssertTrue(reply.contains("rgb:1212/3434/5656"))
+    reply = try await probe.query("\u{1B}]4;200;?\u{7}", from: terminal)
+    XCTAssertTrue(reply.contains("rgb:6565/4343/2121"))
     value.terminalTextColor = nil; controller.applyAppearance(value)
     try assertColor(terminal.nativeForegroundColor, TerminalTheme.termiusDark.palette(effectiveDark: true).foreground)
-    probe.output = Data(); terminal.feed(text: "\u{1B}]4;1;?\u{7}")
-    XCTAssertTrue(String(decoding: probe.output, as: UTF8.self).contains("rgb:1212/3434/5656"))
+    reply = try await probe.query("\u{1B}]4;1;?\u{7}", from: terminal)
+    XCTAssertTrue(reply.contains("rgb:1212/3434/5656"))
     value.terminalTextColor = 0x40E090; value.terminalTheme = .kanagawaLotus; controller.applyAppearance(value)
     try assertColor(terminal.nativeForegroundColor, TerminalColor(0x40E090))
     try assertColor(terminal.nativeBackgroundColor, TerminalTheme.kanagawaLotus.palette(effectiveDark: false).background)
-    XCTAssertEqual(try XCTUnwrap(buffer.getLine(row: 0)).getData().map(\.attribute), cells.map(\.attribute))
+    XCTAssertEqual(try XCTUnwrap(terminalAttributes(terminal, row: 0)), attributes)
   }
 
   func test_color_controls_sync_preview_other_settings_pages_and_restore_follow_theme() async throws {
@@ -153,7 +161,7 @@ final class TerminalThemeTests: XCTestCase {
     let page = AppearanceViewController(store: store), other = AppearanceViewController(store: store)
     let window = NSWindow(contentViewController: page); window.isReleasedWhenClosed = false; _ = other.view
     defer { window.close() }
-    let preview = page.preview.getTerminal()
+    let preview = terminalIdentity(page.preview)
     let row = try XCTUnwrap(page.themeRows.first { $0.theme == .termiusDark })
     row.performClick(nil)
     XCTAssertEqual(store.settings.terminalTheme, .termiusDark)
@@ -190,8 +198,8 @@ final class TerminalThemeTests: XCTestCase {
       for control in descendants(document).compactMap({ $0 as? NSControl }).filter({ !$0.isHiddenOrHasHiddenAncestor }) {
         XCTAssertTrue(document.bounds.contains(control.convert(control.bounds, to: document)), "\(control)")
       }
-      XCTAssertTrue(page.preview.getTerminal() === preview)
-      XCTAssertTrue(String(decoding: preview.getBufferAsData(), as: UTF8.self).contains("deploy@production"))
+      XCTAssertTrue(terminalIdentity(page.preview) == preview)
+      XCTAssertTrue(String(decoding: page.preview.getBufferAsData(), as: UTF8.self).contains("deploy@production"))
     }
     page.fontToggle.performClick(nil); XCTAssertFalse(page.isFontExpanded); XCTAssertTrue(page.fontPopup.isHidden)
     page.fontToggle.performClick(nil); XCTAssertTrue(page.isFontExpanded); XCTAssertFalse(page.fontPopup.isHidden)

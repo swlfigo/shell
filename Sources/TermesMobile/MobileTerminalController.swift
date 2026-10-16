@@ -4,7 +4,7 @@ import SwiftTerm
 import TermesKit
 
 @MainActor
-final class MobileTerminalController: UIViewController, @preconcurrency TerminalViewDelegate {
+final class MobileTerminalController: UIViewController, TerminalViewDelegate {
   let terminal: TerminalView
   private let manager: SessionManager
   private var appliedSettings: AppearanceSettings?
@@ -82,7 +82,7 @@ final class MobileTerminalController: UIViewController, @preconcurrency Terminal
     let palette = settings.terminalTheme.palette(effectiveDark: dark)
     terminal.font = settings.terminalFontName.flatMap { UIFont(name: $0, size: settings.terminalFontSize) }
       ?? .monospacedSystemFont(ofSize: settings.terminalFontSize, weight: .regular)
-    terminal.getTerminal().ansi256PaletteStrategy = .xterm
+    terminal.ansi256PaletteStrategy = .xterm
     terminal.nativeBackgroundColor = palette.background.uiColor
     terminal.nativeForegroundColor = TerminalColor(settings.terminalTextColor ?? palette.foreground.rgb).uiColor
     terminal.installColors(palette.ansi.map { SwiftTerm.Color(red: UInt16($0.red) * 257,
@@ -148,6 +148,7 @@ final class MobileTerminalController: UIViewController, @preconcurrency Terminal
 
 final class MobileTerminalView: TerminalView {
   var onViewportChanged: (() -> Void)?
+  private var viewportNotificationPending = false
 
   override func deleteBackward() {
     guard let marked = markedTextRange else {
@@ -182,7 +183,17 @@ final class MobileTerminalView: TerminalView {
 
   // SwiftTerm's iOS gestures update contentOffset without calling the scrolled delegate.
   override var contentOffset: CGPoint {
-    didSet { onViewportChanged?() }
+    didSet {
+      guard contentOffset != oldValue, onViewportChanged != nil, !viewportNotificationPending else { return }
+      // Layout can change the offset while SwiftTerm holds its non-recursive
+      // engine lock. Notify after it returns so the observer can read the viewport.
+      viewportNotificationPending = true
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        viewportNotificationPending = false
+        onViewportChanged?()
+      }
+    }
   }
 }
 

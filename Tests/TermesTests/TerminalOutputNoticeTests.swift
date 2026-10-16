@@ -30,7 +30,7 @@ final class TerminalOutputNoticeTests: XCTestCase {
   func test_new_output_notice_preserves_history_viewport_and_click_returns_to_latest() async throws {
     let (session, controller, window) = fixture()
     defer { controller.teardown(); window.close() }
-    let terminal = controller.terminalView, buffer = terminal.getTerminal()
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal)
     let denseHistory = (0..<200).map { "history \($0) · received server output · " + String(repeating: "log data ", count: 6) + "\r\n" }.joined()
     session.onData?(Data(denseHistory.utf8))
     XCTAssertFalse(controller.hasUnseenOutput); XCTAssertTrue(controller.newOutputButton.isHidden)
@@ -38,13 +38,13 @@ final class TerminalOutputNoticeTests: XCTestCase {
     XCTAssertTrue(controller.newOutputButton.isHidden, "scrolling alone is not new output")
     session.onData?(Data())
     XCTAssertFalse(controller.hasUnseenOutput)
-    let firstLine = buffer.getLine(row: 0)?.translateToString(trimRight: true)
-    let frame = terminal.frame, rows = buffer.rows, cols = buffer.cols
+    let firstLine = terminalLineText(terminal, row: 0)
+    let frame = terminal.frame, rows = terminal.terminalDimensions.rows, cols = terminal.terminalDimensions.cols
     session.onData?(Data("latest output\r\n".utf8))
     controller.view.layoutSubtreeIfNeeded()
     XCTAssertTrue(controller.hasUnseenOutput); XCTAssertFalse(controller.newOutputButton.isHiddenOrHasHiddenAncestor)
-    XCTAssertEqual(buffer.getLine(row: 0)?.translateToString(trimRight: true), firstLine)
-    XCTAssertEqual(terminal.frame, frame); XCTAssertEqual(buffer.rows, rows); XCTAssertEqual(buffer.cols, cols)
+    XCTAssertEqual(terminalLineText(terminal, row: 0), firstLine)
+    XCTAssertEqual(terminal.frame, frame); XCTAssertEqual(terminal.terminalDimensions.rows, rows); XCTAssertEqual(terminal.terminalDimensions.cols, cols)
     let buttonFrame = controller.newOutputButton.convert(controller.newOutputButton.bounds, to: controller.view)
     XCTAssertTrue(controller.view.bounds.contains(buttonFrame))
     XCTAssertEqual(controller.view.hitTest(NSPoint(x: buttonFrame.midX, y: buttonFrame.midY)), controller.newOutputButton)
@@ -65,8 +65,8 @@ final class TerminalOutputNoticeTests: XCTestCase {
     XCTAssertEqual(terminal.scrollPosition, 1)
     XCTAssertFalse(controller.hasUnseenOutput); XCTAssertTrue(controller.newOutputButton.isHidden)
     XCTAssertTrue(window.firstResponder === terminal)
-    XCTAssertTrue(terminal.getTerminal() === buffer)
-    XCTAssertTrue(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("latest output"))
+    XCTAssertTrue(terminalIdentity(terminal) == buffer)
+    XCTAssertTrue(String(decoding: terminal.getBufferAsData(), as: UTF8.self).contains("latest output"))
     session.onData?(Data("following output\r\n".utf8))
     XCTAssertEqual(terminal.scrollPosition, 1); XCTAssertFalse(controller.hasUnseenOutput)
   }
@@ -104,7 +104,7 @@ final class TerminalOutputNoticeTests: XCTestCase {
   func test_hidden_terminal_keeps_notice_across_reparenting_theme_changes_and_small_panes() throws {
     let (session, controller, window) = fixture()
     defer { controller.teardown(); window.close() }
-    let terminal = controller.terminalView, buffer = terminal.getTerminal()
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal)
     session.onData?(history()); terminal.scroll(toPosition: 0.5)
     controller.view.removeFromSuperview()
     session.onData?(Data("background output\r\n".utf8))
@@ -121,7 +121,7 @@ final class TerminalOutputNoticeTests: XCTestCase {
       XCTAssertTrue(controller.view.hitTest(padding) === controller.newOutputButton)
       XCTAssertFalse(controller.newOutputButton.isHiddenOrHasHiddenAncestor)
     }
-    XCTAssertTrue(terminal.getTerminal() === buffer)
+    XCTAssertTrue(terminalIdentity(terminal) == buffer)
     controller.newOutputButton.performClick(nil)
     controller.applyAppearance(.init(terminalTheme: .light, terminalFontSize: 14))
     XCTAssertFalse(controller.hasUnseenOutput, "appearance changes must not create unread output")
@@ -146,15 +146,15 @@ final class TerminalOutputNoticeTests: XCTestCase {
       return pane.session.state == .connected && pane.children.contains { $0 is TerminalViewController }
     }
     let controller = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let terminal = controller.terminalView, buffer = terminal.getTerminal(), version = pane.session.connectionVersion
-    func output() -> String { String(decoding: buffer.getBufferAsData(), as: UTF8.self) }
+    let terminal = controller.terminalView, version = pane.session.connectionVersion
+    func output() -> String { String(decoding: terminal.getBufferAsData(), as: UTF8.self) }
     pane.session.sendInput(Data("seq 1 240; (sleep 2; printf 'LATE_%s\\n' OUTPUT) & printf 'READY_%s\\n' STREAM\r".utf8))
     try await wait { output().contains("READY_STREAM") }
     terminal.scroll(toPosition: 0.5)
-    let firstLine = buffer.getLine(row: 0)?.translateToString(trimRight: true)
+    let firstLine = terminalLineText(terminal, row: 0)
     try await wait { output().contains("LATE_OUTPUT") }
     XCTAssertTrue(controller.hasUnseenOutput)
-    XCTAssertEqual(buffer.getLine(row: 0)?.translateToString(trimRight: true), firstLine)
+    XCTAssertEqual(terminalLineText(terminal, row: 0), firstLine)
     pane.session.sendInput(Data("printf 'CLICK_%s\\n' 'KEPT'".utf8))
     try await wait { output().contains("'KEPT'") }
     XCTAssertFalse(output().contains("CLICK_KEPT"))

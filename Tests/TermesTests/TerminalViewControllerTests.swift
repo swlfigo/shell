@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 import TermesKit
 import SSHCore
+@testable import SwiftTerm
 @testable import Termes
 
 @MainActor
@@ -13,7 +14,7 @@ final class TerminalViewControllerTests: XCTestCase {
     let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 640, height: 320), styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false; window.contentView = controller.view
     defer { controller.teardown(); window.close() }
-    let buffer = controller.terminalView.getTerminal()
+    let buffer = terminalIdentity(controller.terminalView)
     session.onData?(Data("preserved output\r\n".utf8))
     func brightness() throws -> CGFloat { try XCTUnwrap(controller.terminalView.nativeBackgroundColor.usingColorSpace(.sRGB)).redComponent }
     window.appearance = NSAppearance(named: .darkAqua)
@@ -25,8 +26,8 @@ final class TerminalViewControllerTests: XCTestCase {
     XCTAssertGreaterThan(try brightness(), 0.9)
     controller.applyAppearance(.init(terminalTheme: .graphite, terminalFontSize: 18))
     XCTAssertLessThan(try brightness(), 0.1)
-    XCTAssertTrue(controller.terminalView.getTerminal() === buffer)
-    XCTAssertTrue(String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("preserved output"))
+    XCTAssertTrue(terminalIdentity(controller.terminalView) == buffer)
+    XCTAssertTrue(String(decoding: controller.terminalView.getBufferAsData(), as: UTF8.self).contains("preserved output"))
   }
 
   func test_scrollback_indicator_stays_visible_and_tracks_history_position() throws {
@@ -47,6 +48,7 @@ final class TerminalViewControllerTests: XCTestCase {
     session.onData?(Data(output.utf8))
     terminal.scroll(toPosition: 0.5)
     controller.view.layoutSubtreeIfNeeded()
+    terminal.frameTick()
 
     XCTAssertEqual(scroller.scrollerStyle, .legacy, "the position indicator must not auto-hide")
     XCTAssertFalse(scroller.isHiddenOrHasHiddenAncestor)
@@ -59,8 +61,10 @@ final class TerminalViewControllerTests: XCTestCase {
     XCTAssertEqual(scroller.frame.maxX, terminal.bounds.maxX, accuracy: 0.5)
 
     terminal.scroll(toPosition: 0)
+    terminal.frameTick()
     XCTAssertEqual(scroller.doubleValue, 0, accuracy: 0.001)
     terminal.scroll(toPosition: 1)
+    terminal.frameTick()
     XCTAssertEqual(scroller.doubleValue, 1, accuracy: 0.001)
     window.setContentSize(NSSize(width: 480, height: 200))
     controller.view.layoutSubtreeIfNeeded()

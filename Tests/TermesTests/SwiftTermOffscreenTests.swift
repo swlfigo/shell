@@ -6,7 +6,7 @@ import SwiftTerm
 @MainActor
 final class SwiftTermOffscreenTests: XCTestCase {
   private func line(_ tv: TerminalView, _ row: Int) -> String? {
-    tv.getTerminal().getLine(row: row)?.translateToString(trimRight: true)
+    terminalLineText(tv, row: row)
   }
 
   func test_feed_without_window_updates_buffer() {

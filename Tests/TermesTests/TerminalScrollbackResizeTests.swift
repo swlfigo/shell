@@ -7,8 +7,6 @@ import TermesKit
 @MainActor
 final class TerminalScrollbackResizeTests: XCTestCase {
   func test_chinese_log_scrollback_reflows_across_windows() throws {
-    try XCTSkipUnless(ProcessInfo.processInfo.environment["RUN_SWIFTTERM_REFLOW_TESTS"] == "1",
-      "SwiftTerm 1.20.0 已知历史重排问题；设置 RUN_SWIFTTERM_REFLOW_TESTS=1 复现或验收上游升级。")
     _ = NSApplication.shared
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
@@ -21,15 +19,16 @@ final class TerminalScrollbackResizeTests: XCTestCase {
     controller.applyAppearance(.init(terminalTheme: .termiusDark, terminalFontSize: 15, terminalFontName: "Monaco"))
     defer { controller.teardown(); original.close(); detached.close() }
     original.contentView?.layoutSubtreeIfNeeded()
-    let terminal = controller.terminalView, buffer = terminal.getTerminal()
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal)
     // Keep all fixture rows while narrowing; trimming at the history cap is a separate behavior.
     terminal.changeScrollback(5000)
     let message = "【专家：金融体系将继续保持对实体经济高质量发展的有力支持】金十数据10月14日讯，近期，人民币政策消息"
     let logs = (0..<200).map { "2|flashnews | 2026/10/14 17:14:25.123456 jin10 recv id=\($0) published=2026-10-14 09:14:25 preview=\"" + message + message + "\"" }
     func assertLogs(_ stage: String) {
-      assertTerminalLines(terminalLogicalLines(buffer), logs, context: stage)
-      XCTAssertEqual(session.lastSize?.cols, buffer.cols, stage)
-      XCTAssertEqual(session.lastSize?.rows, buffer.rows, stage)
+      assertTerminalLines(terminalLogicalLines(terminal), logs, context: stage)
+      XCTAssertEqual(terminalIdentity(terminal), buffer, stage)
+      XCTAssertEqual(session.lastSize?.cols, terminal.terminalDimensions.cols, stage)
+      XCTAssertEqual(session.lastSize?.rows, terminal.terminalDimensions.rows, stage)
     }
     session.onData?(Data(logs.map { "\u{1b}[32m\($0)\u{1b}[0m\r\n" }.joined().utf8))
     assertLogs("initial")

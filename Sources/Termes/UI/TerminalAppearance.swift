@@ -52,7 +52,7 @@ enum TerminalFonts {
 func applyTerminalPalette(_ palette: TerminalPalette, to view: TerminalView) {
   // SwiftTerm's adaptive palette rebuilds on foreground changes and loses OSC color
   // overrides. Keep the standard xterm 256-color extension independent of text color.
-  view.getTerminal().ansi256PaletteStrategy = .xterm
+  view.ansi256PaletteStrategy = .xterm
   view.nativeBackgroundColor = palette.background.nativeColor
   view.nativeForegroundColor = palette.foreground.nativeColor
   view.installColors(palette.ansi.map(\.terminalColor))

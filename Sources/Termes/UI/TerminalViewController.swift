@@ -5,7 +5,7 @@ import SnapKit
 
 /// Terminal + status banner of one pane. Driven by `SessionPaneController` via `apply(_:)`.
 @MainActor
-final class TerminalViewController: NSViewController, @preconcurrency TerminalViewDelegate {
+final class TerminalViewController: NSViewController, TerminalViewDelegate {
   private let session: SessionManager
   let terminalView = TerminalView(frame: .zero)
   private let bannerLabel = NSTextField(wrappingLabelWithString: "")

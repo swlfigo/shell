@@ -179,7 +179,7 @@ final class WorkspaceTransferTests: XCTestCase {
       return pane.session.state == .connected && pane.children.contains { $0 is TerminalViewController }
     }
     let terminal = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let buffer = terminal.terminalView.getTerminal(), version = pane.session.connectionVersion
+    let buffer = terminalIdentity(terminal.terminalView), version = pane.session.connectionVersion
     pane.toggleMonitor(); pane.toggleFiles()
     let files = try XCTUnwrap(pane.children.compactMap { $0 as? FileBrowserViewController }.first)
     let monitor = try XCTUnwrap(pane.monitorVC)
@@ -202,11 +202,11 @@ final class WorkspaceTransferTests: XCTestCase {
     XCTAssertEqual(workspace.windows.count, 1); XCTAssertTrue(target.focusedPane === pane)
     XCTAssertEqual(pane.session.state, .connected); XCTAssertEqual(pane.session.connectionVersion, version)
     XCTAssertTrue(target.window?.firstResponder === terminal.terminalView)
-    XCTAssertTrue(terminal.terminalView.getTerminal() === buffer); XCTAssertTrue(files.model.transfers === queue)
+    XCTAssertTrue(terminalIdentity(terminal.terminalView) == buffer); XCTAssertTrue(files.model.transfers === queue)
     XCTAssertTrue(pane.monitorVC === monitor); XCTAssertEqual(monitor.model.history, history)
     XCTAssertEqual(queue.jobs.first?.id, queueID)
     pane.session.sendInput(Data("\r".utf8))
-    try await wait { String(decoding: buffer.getBufferAsData(), as: UTF8.self).contains("MOVE_INPUT_PRESERVED") }
+    try await wait { String(decoding: terminal.terminalView.getBufferAsData(), as: UTF8.self).contains("MOVE_INPUT_PRESERVED") }
     try await wait { queue.jobs.first?.state == .completed }
     let greeting = try await ForwardTestSocket.exchange(port: port, data: Data())
     XCTAssertTrue(String(decoding: greeting, as: UTF8.self).contains("SSH-"))
@@ -235,8 +235,6 @@ final class WorkspaceTransferTests: XCTestCase {
   }
 
   func test_scrolled_chinese_ssh_logs_survive_tear_off_live_resize_and_drop_back_into_original_window() async throws {
-    try XCTSkipUnless(ProcessInfo.processInfo.environment["RUN_SWIFTTERM_REFLOW_TESTS"] == "1",
-      "SwiftTerm 1.20.0 已知历史重排问题；设置 RUN_SWIFTTERM_REFLOW_TESTS=1 复现或验收上游升级。")
     let (services, workspace) = try fixture(); defer { close(workspace) }
     let server = try await TestSSHServer.start(); addTeardownBlock { await server.stop() }
     try services.appearance.update(.init(theme: .dark, terminalTheme: .termiusDark,
@@ -251,7 +249,7 @@ final class WorkspaceTransferTests: XCTestCase {
       return pane.session.state == .connected && pane.children.contains { $0 is TerminalViewController }
     }
     let controller = try XCTUnwrap(pane.children.compactMap { $0 as? TerminalViewController }.first)
-    let terminal = controller.terminalView, buffer = terminal.getTerminal(), version = pane.session.connectionVersion
+    let terminal = controller.terminalView, buffer = terminalIdentity(terminal), version = pane.session.connectionVersion
     source.newTab(nil); let other = try XCTUnwrap(source.focusedPane)
     source.selectPreviousTab(nil)
     XCTAssertTrue(source.focusedPane === pane); XCTAssertEqual(source.layout.tabs.count, 2)
@@ -263,15 +261,15 @@ final class WorkspaceTransferTests: XCTestCase {
     let script = "printf '%s\\n' " + logs.map { "'\u{1b}[32m\($0)\u{1b}[0m'" }.joined(separator: " ") + "\nprintf 'REFLOW_%s\\n' 'READY'\n"
     _ = try await server.execute(["sh", "-c", "cat > /config/termes-reflow-logs.sh <<'TERMES_LOGS'\n\(script)TERMES_LOGS\n"])
     pane.session.sendInput(Data("sh /config/termes-reflow-logs.sh\r".utf8))
-    try await wait { terminalLogicalLines(buffer).contains("REFLOW_READY") }
+    try await wait { terminalLogicalLines(terminal).contains("REFLOW_READY") }
     func check(_ owner: MainWindowController, _ stage: String) {
-      assertTerminalLines(terminalLogicalLines(buffer).filter { $0.hasPrefix("2|flashnews | ") }, logs, context: stage)
-      XCTAssertTrue(terminal.getTerminal() === buffer, stage)
+      assertTerminalLines(terminalLogicalLines(terminal).filter { $0.hasPrefix("2|flashnews | ") }, logs, context: stage)
+      XCTAssertTrue(terminalIdentity(terminal) == buffer, stage)
       XCTAssertTrue(terminal.window === owner.window, stage)
       XCTAssertEqual(pane.session.state, .connected, stage)
       XCTAssertEqual(pane.session.connectionVersion, version, stage)
-      XCTAssertEqual(pane.session.lastSize?.cols, buffer.cols, stage)
-      XCTAssertEqual(pane.session.lastSize?.rows, buffer.rows, stage)
+      XCTAssertEqual(pane.session.lastSize?.cols, terminal.terminalDimensions.cols, stage)
+      XCTAssertEqual(pane.session.lastSize?.rows, terminal.terminalDimensions.rows, stage)
       XCTAssertLessThan(terminal.scrollPosition, 1, stage)
     }
     terminal.scroll(toPosition: 0.3); XCTAssertLessThan(terminal.scrollPosition, 1)
@@ -297,6 +295,6 @@ final class WorkspaceTransferTests: XCTestCase {
     }
     // The final PTY dimensions reach the same remote shell after all queued resize requests.
     pane.session.sendInput(Data("printf 'REFLOW_SIZE_%s\\n' \"$(stty size)\"\r".utf8))
-    try await wait { terminalLogicalLines(buffer).contains("REFLOW_SIZE_\(buffer.rows) \(buffer.cols)") }
+    try await wait { terminalLogicalLines(terminal).contains("REFLOW_SIZE_\(terminal.terminalDimensions.rows) \(terminal.terminalDimensions.cols)") }
   }
 }
