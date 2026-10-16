@@ -2,10 +2,11 @@ import AppKit
 import SwiftTerm
 import TermesKit
 import SnapKit
+import UniformTypeIdentifiers
 
 /// Terminal + status banner of one pane. Driven by `SessionPaneController` via `apply(_:)`.
 @MainActor
-final class TerminalViewController: NSViewController, TerminalViewDelegate {
+final class TerminalViewController: NSViewController, TerminalViewDelegate, NSSearchFieldDelegate {
   private let session: SessionManager
   let terminalView = TerminalView(frame: .zero)
   private let bannerLabel = NSTextField(wrappingLabelWithString: "")
@@ -31,6 +32,10 @@ final class TerminalViewController: NSViewController, TerminalViewDelegate {
     return button
   }()
   private lazy var newOutputNotice = TerminalOutputNoticeView(button: newOutputButton)
+  let searchField = NSSearchField()
+  let searchStatus = NSTextField(labelWithString: "")
+  private(set) var searchBar = NSStackView()
+  private var searchRefresh: Task<Void, Never>?
 
   init(session: SessionManager) {
     self.session = session
@@ -52,13 +57,35 @@ final class TerminalViewController: NSViewController, TerminalViewDelegate {
     banner.orientation = .horizontal
     banner.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
     banner.isHidden = true
-    let column = NSStackView(views: [banner, terminalView])
+    searchField.placeholderString = "搜索终端历史"
+    searchField.delegate = self
+    searchField.setAccessibilityIdentifier("terminal.search")
+    searchStatus.setAccessibilityIdentifier("terminal.searchStatus")
+    searchStatus.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    func button(_ symbol: String, _ title: String, action: Selector) -> NSButton {
+      let button = NSButton(title: title, target: self, action: action)
+      button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+      button.imagePosition = .imageOnly; button.isBordered = false
+      button.toolTip = title; button.setAccessibilityLabel(title)
+      button.snp.makeConstraints { $0.width.equalTo(24); $0.height.equalTo(24) }
+      return button
+    }
+    let previous = button("chevron.up", "上一个匹配", action: #selector(previousSearchMatch))
+    let next = button("chevron.down", "下一个匹配", action: #selector(nextSearchMatch))
+    let close = button("xmark", "关闭搜索", action: #selector(closeSearch))
+    searchBar = NSStackView(views: [searchField, searchStatus, previous, next, close])
+    searchBar.spacing = 4
+    searchBar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+    searchBar.isHidden = true
+    searchStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    searchField.snp.makeConstraints { $0.width.greaterThanOrEqualTo(60).priority(750) }
+    let column = NSStackView(views: [banner, searchBar, terminalView])
     column.orientation = .vertical
     column.spacing = 0
     column.distribution = .fill
     root.addSubview(column)
     column.snp.makeConstraints { make in make.edges.equalToSuperview().labeled("Terminal.column") }
-    for child in [banner!, terminalView] {
+    for child in [banner!, searchBar, terminalView] {
       child.snp.makeConstraints { make in make.leading.trailing.equalToSuperview() }
     }
     // Overlay the notice so showing it does not resize the PTY or shift the history.
@@ -80,6 +107,7 @@ final class TerminalViewController: NSViewController, TerminalViewDelegate {
     let font = TerminalFonts.resolve(name: settings.terminalFontName, size: settings.terminalFontSize)
     if terminalView.font.fontName != font.fontName || terminalView.font.pointSize != font.pointSize { terminalView.font = font }
     applyColors()
+    if !searchBar.isHidden { view.layoutSubtreeIfNeeded(); refreshSearch(reset: true) }
   }
 
   private func applyColors() {
@@ -103,7 +131,59 @@ final class TerminalViewController: NSViewController, TerminalViewDelegate {
   }
 
   /// Unbinds terminal output; called by the pane when it leaves the terminal or closes.
-  func teardown() { session.onData = nil; hasUnseenOutput = false; updateOutputNotice() }
+  func teardown() {
+    session.onData = nil; hasUnseenOutput = false; updateOutputNotice()
+    searchRefresh?.cancel(); searchRefresh = nil
+  }
+
+  func showSearch() {
+    _ = view
+    searchBar.isHidden = false
+    refreshSearch(reset: true)
+    view.window?.makeFirstResponder(searchField)
+  }
+  @objc func closeSearch() {
+    terminalView.clearSearch()
+    searchBar.isHidden = true
+    searchRefresh?.cancel(); searchRefresh = nil
+    focusTerminal()
+  }
+  func controlTextDidChange(_ obj: Notification) { refreshSearch(reset: true) }
+  func control(_ control: NSControl, textView: NSTextView, doCommandBy command: Selector) -> Bool {
+    if command == #selector(NSResponder.insertNewline(_:)) { nextSearchMatch(); return true }
+    if command == #selector(NSResponder.cancelOperation(_:)) { closeSearch(); return true }
+    return false
+  }
+  @objc func nextSearchMatch() { navigateSearch(forward: true) }
+  @objc func previousSearchMatch() { navigateSearch(forward: false) }
+  func navigateSearch(forward: Bool) {
+    guard !searchBar.isHidden else { showSearch(); return }
+    let query = searchField.stringValue
+    if !query.isEmpty {
+      if forward { terminalView.findNext(query) } else { terminalView.findPrevious(query) }
+    }
+    refreshSearch(reset: false)
+  }
+  func refreshSearch(reset: Bool) {
+    let query = searchField.stringValue
+    if reset { terminalView.clearSearch(); if !query.isEmpty { terminalView.findNext(query) } }
+    let summary = terminalView.searchMatchSummary(query, limit: 1001)
+    searchStatus.stringValue = query.isEmpty ? "" : summary.total == 0 ? "无匹配"
+      : summary.total > 1000 ? "1000+ 项匹配" : summary.index == 0 ? "\(summary.total) 项匹配" : "\(summary.index)/\(summary.total)"
+  }
+  func exportSnapshot() -> Data { terminalView.getBufferAsData() }
+  func exportOutput() {
+    let data = exportSnapshot()
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = "termes-terminal.txt"
+    panel.allowedContentTypes = [.plainText]
+    guard let window = view.window else { return }
+    panel.beginSheetModal(for: window) { response in
+      guard response == .OK, let url = panel.url else { return }
+      do { try data.write(to: url, options: .atomic) }
+      catch { NSAlert(error: error).beginSheetModal(for: window) }
+    }
+  }
 
   private var isReadingHistory: Bool { terminalView.canScroll && terminalView.scrollPosition < 1 }
 
@@ -113,6 +193,13 @@ final class TerminalViewController: NSViewController, TerminalViewDelegate {
     terminalView.feed(byteArray: Array(data)[...])
     if wasReadingHistory && isReadingHistory { hasUnseenOutput = true }
     updateOutputNotice()
+    if !searchBar.isHidden, searchRefresh == nil {
+      searchRefresh = Task { @MainActor [weak self] in
+        do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+        self?.searchRefresh = nil
+        self?.refreshSearch(reset: false)
+      }
+    }
   }
 
   private func updateOutputNotice() {

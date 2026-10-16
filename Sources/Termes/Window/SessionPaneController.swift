@@ -190,6 +190,11 @@ final class SessionPaneController: NSViewController {
     }
   }
 
+  var hasTerminalOutput: Bool { terminalVC != nil }
+  func showTerminalSearch() { terminalVC?.showSearch() }
+  func navigateTerminalSearch(forward: Bool) { terminalVC?.navigateSearch(forward: forward) }
+  func exportTerminalOutput() { terminalVC?.exportOutput() }
+
   @discardableResult
   func insertSnippet(_ snippet: Snippet, parameters: [String: String] = [:]) -> Bool {
     guard terminalVC != nil, session.insertSnippet(snippet, parameters: parameters) else { return false }

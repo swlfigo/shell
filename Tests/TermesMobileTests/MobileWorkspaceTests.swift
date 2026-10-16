@@ -51,6 +51,87 @@ final class MobileWorkspaceTests: XCTestCase {
     XCTAssertTrue(try workspace.profiles.profiles().isEmpty)
   }
 
+  func testKeyboardTabNavigationUsesTabsAndRetainsSplitFocus() throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile)); first.disconnect()
+    let second = try XCTUnwrap(workspace.open(profile, newSession: true)); second.disconnect()
+    let third = try XCTUnwrap(workspace.open(profile, newSession: true)); third.disconnect()
+    workspace.merge(second, beside: first, edge: .right)
+    workspace.selectTab(at: 0)
+    XCTAssertEqual(workspace.selectedSessionID, second.id)
+    workspace.cycleTab(by: -1)
+    XCTAssertEqual(workspace.selectedSessionID, third.id)
+    workspace.cycleTab(by: 1)
+    XCTAssertEqual(workspace.selectedSessionID, second.id)
+    workspace.selectTab(at: 8)
+    XCTAssertEqual(workspace.selectedSessionID, second.id)
+    XCTAssertEqual(workspace.layout.tabs.count, 2)
+    XCTAssertEqual(workspace.layout.tabs[0].paneIds.count, 2)
+  }
+
+  func testNewTabHostPickerAlwaysCreatesAnIndependentSession() throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile)); first.disconnect()
+    first.terminalController.terminal.feed(text: "existing session output")
+    let picker = MobileVaultsController(workspace: workspace, choosingNewSession: true)
+    picker.loadViewIfNeeded()
+    XCTAssertEqual(picker.numberOfSections(in: picker.tableView), 1)
+    picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
+    XCTAssertEqual(workspace.sessions.count, 2)
+    let created = try XCTUnwrap(workspace.selectedSession); created.disconnect()
+    XCTAssertNotEqual(created.id, first.id)
+    XCTAssertTrue(String(decoding: first.terminalController.exportSnapshot(), as: UTF8.self).contains("existing session output"))
+  }
+
+  func testEmptyWorkspaceRoutesNewTabCommandToItsOwnHostPicker() async throws {
+    let root = MobileRootController(workspace: workspace)
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    let previousKeyWindow = scene.keyWindow
+    let window = UIWindow(windowScene: scene)
+    window.rootViewController = root; window.makeKeyAndVisible()
+    defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+    root.view.layoutIfNeeded()
+    XCTAssertTrue(root.becomeFirstResponder())
+    let command = try XCTUnwrap(root.keyCommands?.first { $0.input == "t" && $0.modifierFlags == .command })
+    XCTAssertTrue(root.canPerformAction(command.action!, withSender: command))
+    XCTAssertTrue(UIApplication.shared.sendAction(command.action!, to: nil, from: command, for: nil))
+    try await Task.sleep(for: .milliseconds(400))
+    let navigation = try XCTUnwrap(root.presentedViewController as? UINavigationController)
+    XCTAssertEqual(navigation.topViewController?.title, "新建连接")
+    XCTAssertFalse(root.canPerformAction(command.action!, withSender: command))
+    XCTAssertTrue(workspace.sessions.isEmpty, "opening the picker must not create or connect a session")
+    await withCheckedContinuation { continuation in root.dismiss(animated: false) { continuation.resume() } }
+  }
+
+  func testWorkspaceKeyboardCommandsRouteFromTerminalAndStopAtPresentedEditors() async throws {
+    let profile = try workspace.save(draft())
+    let first = try XCTUnwrap(workspace.open(profile)); first.disconnect()
+    let second = try XCTUnwrap(workspace.open(profile, newSession: true)); second.disconnect()
+    let root = MobileRootController(workspace: workspace)
+    let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    let previousKeyWindow = scene.keyWindow
+    let window = UIWindow(windowScene: scene)
+    window.frame = CGRect(x: 0, y: 0, width: 1_024, height: 768)
+    window.rootViewController = root; window.makeKeyAndVisible()
+    defer { window.isHidden = true; window.rootViewController = nil; previousKeyWindow?.makeKey() }
+    root.view.layoutIfNeeded()
+    await Task.yield()
+    second.terminalController.showKeyboard()
+    let firstTab = try XCTUnwrap(root.keyCommands?.first { $0.input == "1" && $0.modifierFlags == .command })
+    XCTAssertTrue(UIApplication.shared.sendAction(firstTab.action!, to: nil, from: firstTab, for: nil))
+    XCTAssertEqual(workspace.selectedSessionID, first.id)
+    root.nextTab(nil)
+    XCTAssertEqual(workspace.selectedSessionID, second.id)
+    XCTAssertFalse(root.canPerformAction(#selector(MobileRootController.searchTerminal(_:)), withSender: nil), "the initial connection overlay must not focus a hidden terminal search field")
+    root.openSettings(nil)
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertFalse(root.canPerformAction(#selector(MobileRootController.duplicateCurrentSession(_:)), withSender: nil))
+    root.duplicateCurrentSession(nil)
+    root.closeCurrentSession(nil)
+    XCTAssertEqual(workspace.sessions.count, 2, "commands must not change the workspace behind an editor")
+    await withCheckedContinuation { continuation in root.dismiss(animated: false) { continuation.resume() } }
+  }
+
   func testInvalidCredentialDoesNotCreateHost() {
     var invalid = draft(); invalid.password = ""
     XCTAssertThrowsError(try workspace.save(invalid))
@@ -297,6 +378,42 @@ final class MobileTerminalOutputNoticeTests: XCTestCase {
     controller.shutdown()
     window.isHidden = true
     window.rootViewController = nil
+  }
+
+  func testTerminalSearchNavigatesChineseMatchesWithoutChangingOutputAndExportsPlainUTF8() throws {
+    let (manager, controller, window) = fixture()
+    defer { close(controller, window: window) }
+    manager.onData?(Data("\u{1b}[31m中文needle first\u{1b}[0m\r\n中文NEEDLE second\r\n中文needle third\r\n".utf8))
+    controller.showSearch()
+    controller.searchField.text = "中文needle"
+    controller.searchField.sendActions(for: .editingChanged)
+    controller.apply(.init(terminalTheme: .graphite), dark: false)
+    XCTAssertEqual(controller.searchBar.overrideUserInterfaceStyle, .dark, "a dark terminal needs readable search controls even when the app uses light mode")
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    XCTAssertTrue(controller.searchStatus.textColor.getRed(&red, green: &green, blue: &blue, alpha: &alpha))
+    XCTAssertGreaterThan(red, 0.5)
+    let first = controller.terminal.searchMatchSummary("中文needle")
+    XCTAssertEqual(first.total, 3)
+    XCTAssertGreaterThan(first.index, 0)
+    XCTAssertTrue(controller.searchField.isFirstResponder)
+    XCTAssertFalse(controller.terminal.isFirstResponder)
+    let snapshot = controller.exportSnapshot()
+    controller.navigateSearch(forward: true)
+    let next = controller.terminal.searchMatchSummary("中文needle")
+    XCTAssertEqual(next.index, first.index % 3 + 1)
+    controller.navigateSearch(forward: false)
+    XCTAssertEqual(controller.terminal.searchMatchSummary("中文needle").index, first.index)
+    XCTAssertEqual(controller.exportSnapshot(), snapshot)
+    let text = try XCTUnwrap(String(data: snapshot, encoding: .utf8))
+    XCTAssertTrue(text.contains("中文needle first"))
+    XCTAssertTrue(text.contains("中文NEEDLE second"))
+    XCTAssertFalse(text.contains("\u{1b}"))
+    controller.searchField.text = "no-such-output"
+    controller.searchField.sendActions(for: .editingChanged)
+    XCTAssertEqual(controller.searchStatus.text, "无匹配")
+    controller.closeSearch()
+    XCTAssertFalse(controller.isSearching)
+    XCTAssertFalse(controller.searchField.isFirstResponder)
   }
 
   func testNewOutputPreservesHistoryAndGridWhileButtonReturnsToLatestWithoutOpeningKeyboard() {

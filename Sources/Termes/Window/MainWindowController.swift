@@ -349,6 +349,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, TabBarVi
     else { workspaceView?.revealSidebar(); sidebar.focusSearch() }
   }
 
+  @objc func findTerminalText(_ sender: Any?) {
+    guard !isShowingVaults else { return }; focusedPane?.showTerminalSearch()
+  }
+  @objc func findNextTerminalMatch(_ sender: Any?) {
+    guard !isShowingVaults else { return }; focusedPane?.navigateTerminalSearch(forward: true)
+  }
+  @objc func findPreviousTerminalMatch(_ sender: Any?) {
+    guard !isShowingVaults else { return }; focusedPane?.navigateTerminalSearch(forward: false)
+  }
+  @objc func exportTerminalOutput(_ sender: Any?) {
+    guard !isShowingVaults else { return }; focusedPane?.exportTerminalOutput()
+  }
+
   @objc func showVaults(_ sender: Any?) {
     window?.makeFirstResponder(nil)
     isShowingVaults = true
@@ -651,6 +664,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, TabBarVi
 extension MainWindowController: NSMenuItemValidation {
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
     switch item.action {
+    case #selector(findTerminalText(_:)), #selector(findNextTerminalMatch(_:)),
+         #selector(findPreviousTerminalMatch(_:)), #selector(exportTerminalOutput(_:)):
+      return !isShowingVaults && focusedPane?.hasTerminalOutput == true
     case #selector(moveCurrentTabToNewWindow(_:)):
       return !isShowingVaults && workspaceController != nil && canTransfer && layout.selectedTab != nil
     case #selector(toggleSidebar(_:)):

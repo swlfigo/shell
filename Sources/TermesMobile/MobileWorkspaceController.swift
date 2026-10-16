@@ -81,6 +81,11 @@ final class MobileWorkspaceController: UIViewController {
     title = controller.title
     navigationItem.rightBarButtonItems = controller.navigationItem.rightBarButtonItems
   }
+
+  func closeFocusedSession() {
+    guard let id = workspace.selectedSessionID else { return }
+    controllers[id]?.closeSession()
+  }
 }
 
 private final class MobilePaneFocusGesture: UITapGestureRecognizer, UIGestureRecognizerDelegate {

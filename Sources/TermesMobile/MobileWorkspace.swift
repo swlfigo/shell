@@ -193,6 +193,16 @@ final class MobileWorkspace: ObservableObject {
 
   var selectedSession: MobileSession? { sessions.first { $0.id == selectedSessionID } }
 
+  func selectTab(at index: Int) {
+    guard layout.tabs.indices.contains(index) else { return }
+    selectedSessionID = layout.tabs[index].focusedPane
+  }
+
+  func cycleTab(by offset: Int) {
+    guard !layout.tabs.isEmpty, let index = layout.tabs.firstIndex(where: { $0.id == layout.selectedTabId }) else { return }
+    selectTab(at: (index + offset % layout.tabs.count + layout.tabs.count) % layout.tabs.count)
+  }
+
   func reloadHosts() {
     do { hosts = try profiles.profiles(); keys = try profiles.keys() }
     catch { self.error = error.localizedDescription }

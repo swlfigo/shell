@@ -7,6 +7,43 @@ import SSHCore
 
 @MainActor
 final class TerminalViewControllerTests: XCTestCase {
+  func test_terminal_search_navigates_chinese_matches_and_exports_plain_utf8_without_mutating_output() throws {
+    _ = NSApplication.shared
+    let session = SessionManager(knownHosts: KnownHostsStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
+    let controller = TerminalViewController(session: session)
+    let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 640, height: 320), styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.contentView = controller.view
+    defer { controller.teardown(); window.close() }
+    session.onData?(Data("\u{1b}[31m中文needle first\u{1b}[0m\r\n中文NEEDLE second\r\n中文needle third\r\n".utf8))
+    controller.showSearch()
+    controller.searchField.stringValue = "中文needle"
+    controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: controller.searchField))
+    controller.applyAppearance(.init(terminalTheme: .graphite, terminalFontSize: 14))
+    let first = controller.terminalView.searchMatchSummary("中文needle")
+    XCTAssertEqual(first.total, 3)
+    XCTAssertGreaterThan(first.index, 0)
+    let snapshot = controller.exportSnapshot()
+    controller.nextSearchMatch()
+    XCTAssertEqual(controller.terminalView.searchMatchSummary("中文needle").index, first.index % 3 + 1)
+    controller.previousSearchMatch()
+    XCTAssertEqual(controller.terminalView.searchMatchSummary("中文needle").index, first.index)
+    XCTAssertEqual(controller.exportSnapshot(), snapshot)
+    let text = try XCTUnwrap(String(data: snapshot, encoding: .utf8))
+    XCTAssertTrue(text.contains("中文needle first"))
+    XCTAssertTrue(text.contains("中文NEEDLE second"))
+    XCTAssertFalse(text.contains("\u{1b}"))
+    window.setContentSize(NSSize(width: 220, height: 320))
+    controller.view.layoutSubtreeIfNeeded()
+    controller.refreshSearch(reset: true)
+    XCTAssertGreaterThanOrEqual(controller.searchField.frame.width, 60)
+    XCTAssertEqual(controller.terminalView.searchMatchSummary("中文needle").total, 3)
+    controller.searchField.stringValue = "no-such-output"
+    controller.refreshSearch(reset: true)
+    XCTAssertEqual(controller.searchStatus.stringValue, "无匹配")
+    controller.closeSearch()
+    XCTAssertTrue(controller.searchBar.isHidden)
+  }
+
   func test_terminal_colors_follow_explicit_preference_or_system_appearance_without_replacing_buffer() throws {
     _ = NSApplication.shared
     let session = SessionManager(knownHosts: KnownHostsStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))

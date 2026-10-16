@@ -187,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     file.addItem(withTitle: "新建窗口", action: #selector(newWindow(_:)), keyEquivalent: "n").target = self
     file.addItem(withTitle: "复制会话", action: #selector(MainWindowController.duplicateSession(_:)), keyEquivalent: "d")
     file.addItem(withTitle: "保存远端文件", action: #selector(RemoteFileEditorWindowController.saveRemoteFile(_:)), keyEquivalent: "s")
+    file.addItem(withTitle: "导出终端输出…", action: #selector(MainWindowController.exportTerminalOutput(_:)), keyEquivalent: "E")
     file.addItem(.separator())
     file.addItem(withTitle: "关闭", action: #selector(MainWindowController.closeFocusedPane(_:)), keyEquivalent: "w")
 
@@ -198,6 +199,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    edit.addItem(.separator())
+    edit.addItem(withTitle: "搜索终端历史…", action: #selector(MainWindowController.findTerminalText(_:)), keyEquivalent: "f")
+    edit.addItem(withTitle: "下一个匹配", action: #selector(MainWindowController.findNextTerminalMatch(_:)), keyEquivalent: "g")
+    edit.addItem(withTitle: "上一个匹配", action: #selector(MainWindowController.findPreviousTerminalMatch(_:)), keyEquivalent: "G")
 
     let conn = submenu("连接")
     let saved = NSMenuItem(title: "打开已存连接", action: nil, keyEquivalent: "")

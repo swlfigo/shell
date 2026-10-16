@@ -5,6 +5,7 @@ import TermesKit
 
 final class MobileVaultsController: UITableViewController, UISearchResultsUpdating {
   let workspace: MobileWorkspace
+  private let choosingNewSession: Bool
   var onOpenSession: ((MobileSession) -> Void)?
   private var subscriptions = Set<AnyCancellable>()
   private let search = UISearchController(searchResultsController: nil)
@@ -12,17 +13,18 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
     let query = search.searchBar.text ?? ""
     return workspace.hosts.filter { query.isEmpty || "\($0.name) \($0.hostname) \($0.username)".localizedCaseInsensitiveContains(query) }
   }
-  private var hostsSection: Int { workspace.sessions.isEmpty ? 0 : 1 }
+  private var hostsSection: Int { choosingNewSession || workspace.sessions.isEmpty ? 0 : 1 }
 
-  init(workspace: MobileWorkspace) {
+  init(workspace: MobileWorkspace, choosingNewSession: Bool = false) {
     self.workspace = workspace
+    self.choosingNewSession = choosingNewSession
     super.init(style: .insetGrouped)
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    title = "Vaults"
+    title = choosingNewSession ? "新建连接" : "Vaults"
     navigationItem.largeTitleDisplayMode = .always
     navigationController?.navigationBar.prefersLargeTitles = true
     search.searchResultsUpdater = self
@@ -48,10 +50,11 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
       window.accessibilityLabel = "新建窗口"; window.accessibilityIdentifier = "workspace.newWindow"
       buttons.append(window)
     }
-    navigationItem.rightBarButtonItems = buttons
+    navigationItem.rightBarButtonItems = choosingNewSession ? [add] : buttons
     let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), primaryAction: UIAction { [weak self] _ in self?.showSettings() })
     settings.accessibilityLabel = "设置"; settings.accessibilityIdentifier = "settings.open"
-    navigationItem.leftBarButtonItem = settings
+    navigationItem.leftBarButtonItem = choosingNewSession
+      ? UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }) : settings
     Publishers.CombineLatest(workspace.$hosts, workspace.$sessions).receive(on: RunLoop.main).sink { [weak self] _, _ in
       self?.tableView.reloadData()
     }.store(in: &subscriptions)
@@ -59,6 +62,11 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
   }
 
   func updateSearchResults(for searchController: UISearchController) { tableView.reloadData() }
+  func focusSearch() {
+    loadViewIfNeeded()
+    search.isActive = true
+    search.searchBar.becomeFirstResponder()
+  }
   override func numberOfSections(in tableView: UITableView) -> Int { hostsSection + 1 }
   override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
     section == hostsSection ? max(1, filteredHosts.count) : workspace.sessions.count
@@ -120,7 +128,7 @@ final class MobileVaultsController: UITableViewController, UISearchResultsUpdati
 
   private func open(_ profile: ConnectionProfile, newSession: Bool = false) {
     search.isActive = false
-    if let session = workspace.open(profile, newSession: newSession) { onOpenSession?(session) }
+    if let session = workspace.open(profile, newSession: choosingNewSession || newSession) { onOpenSession?(session) }
   }
 
   func editHost(_ profile: ConnectionProfile?) {

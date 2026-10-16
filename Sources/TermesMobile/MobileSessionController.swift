@@ -201,6 +201,13 @@ final class MobileSessionController: UIViewController {
   private func updateMenu(_ state: SessionManager.State) {
     var actions: [UIMenuElement] = [UIAction(title: "连接详情", image: UIImage(systemName: "list.bullet.rectangle")) { [weak self] _ in self?.showProgress() }]
     actions.append(UIAction(title: "服务器监控", image: UIImage(systemName: "chart.xyaxis.line")) { [weak self] _ in self?.showMonitor() })
+    let terminalTools: UIMenuElement.Attributes = state == .connected || hasConnected && !state.isActive ? [] : .disabled
+    actions.append(UIAction(title: "搜索终端历史", image: UIImage(systemName: "magnifyingglass"), attributes: terminalTools) { [weak self] _ in
+      self?.session.terminalController.showSearch()
+    })
+    actions.append(UIAction(title: "导出终端输出", image: UIImage(systemName: "square.and.arrow.up"), attributes: terminalTools) { [weak self] _ in
+      guard let self else { return }; session.terminalController.exportOutput(from: self)
+    })
     actions.append(UIAction(title: "文件", image: UIImage(systemName: "folder")) { [weak self] _ in
       guard let self else { return }; session.terminalController.hideKeyboard()
       presentSheet(MobileFilesController(model: session.files()))
@@ -282,7 +289,7 @@ final class MobileSessionController: UIViewController {
     alert.addAction(UIAlertAction(title: "断开连接", style: .destructive) { [weak self] _ in self?.session.disconnect() })
     present(alert, animated: true)
   }
-  @objc private func closeSession() {
+  @objc func closeSession() {
     guard session.hasUnfinishedWork else { workspace.close(session); return }
     let alert = UIAlertController(title: "关闭会话？", message: "此操作会断开 SSH、停止端口转发并取消此会话的文件传输。", preferredStyle: .alert)
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -292,9 +299,4 @@ final class MobileSessionController: UIViewController {
     present(alert, animated: true)
   }
 
-  override var keyCommands: [UIKeyCommand]? {
-    let close = UIKeyCommand(input: "w", modifierFlags: .command, action: #selector(closeSession))
-    close.discoverabilityTitle = "关闭会话"
-    return [close]
-  }
 }

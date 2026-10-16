@@ -260,6 +260,63 @@ final class MobileNavigationTests: XCTestCase {
     XCTAssertTrue(keyboard.isEnabled)
   }
 
+  func testSSHSessionTabsSearchAndTranscriptExport() throws {
+    guard let value = ProcessInfo.processInfo.environment["TERMES_SSH_TEST_PORT"], let port = Int(value), port > 0 else {
+      throw XCTSkip("Set TERMES_SSH_TEST_PORT to run against the optional local SSH fixture.")
+    }
+    addHost(name: "Keyboard workspace", port: String(port))
+    app.cells["host.Keyboard workspace"].tap()
+    XCTAssertTrue(app.buttons["hostTrust.accept"].waitForExistence(timeout: 10))
+    app.buttons["hostTrust.accept"].tap()
+    let keyboard = app.buttons["terminal.keyboard"]
+    expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: keyboard)
+    waitForExpectations(timeout: 10)
+    keyboard.tap()
+    app.typeText("echo mobile-ssh-ok\necho mobile-ssh-ok\n")
+
+    if app.navigationBars.buttons["Vaults"].exists { app.navigationBars.buttons["Vaults"].tap() }
+    app.cells["host.Keyboard workspace"].press(forDuration: 1)
+    app.buttons["在新会话中连接"].tap()
+    expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: keyboard)
+    waitForExpectations(timeout: 10)
+    let tabs = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "workspaceTab."))
+    XCTAssertEqual(tabs.count, 2)
+    tabs.element(boundBy: 0).tap()
+    app.buttons["terminal.menu"].tap()
+    app.collectionViews.buttons["搜索终端历史"].tap()
+    let search = app.textFields["terminal.search"]
+    XCTAssertTrue(search.waitForExistence(timeout: 5))
+    search.typeText("mobile-ssh-ok")
+    let status = app.staticTexts["terminal.searchStatus"]
+    waitForMetric(status, containing: "/", timeout: 5)
+    let previous = status.label
+    app.buttons["terminal.searchNext"].tap()
+    XCTAssertNotEqual(status.label, previous)
+    app.buttons["terminal.searchPrevious"].tap()
+    XCTAssertEqual(status.label, previous)
+    attachScreenshot("搜索终端历史")
+    app.buttons["terminal.searchClose"].tap()
+    XCTAssertFalse(search.exists)
+
+    tabs.element(boundBy: 1).tap()
+    app.buttons["terminal.menu"].tap()
+    app.collectionViews.buttons["搜索终端历史"].tap()
+    XCTAssertTrue(search.waitForExistence(timeout: 5))
+    search.typeText("mobile-ssh-ok")
+    waitForMetric(status, containing: "无匹配", timeout: 5)
+    app.buttons["terminal.searchClose"].tap()
+    tabs.element(boundBy: 0).tap()
+    app.buttons["terminal.menu"].tap()
+    app.collectionViews.buttons["搜索终端历史"].tap()
+    waitForMetric(status, containing: "/", timeout: 5)
+    app.buttons["terminal.searchClose"].tap()
+    app.buttons["terminal.menu"].tap()
+    app.collectionViews.buttons["导出终端输出"].tap()
+    let transcript = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "termes-terminal")).firstMatch
+    XCTAssertTrue(transcript.waitForExistence(timeout: 5), app.debugDescription)
+    attachScreenshot("导出终端 UTF-8 文本")
+  }
+
   func testLibrarySavesSnippetsAndOfflineForwardRules() {
     addHost(name: "Library host")
     createSnippet()

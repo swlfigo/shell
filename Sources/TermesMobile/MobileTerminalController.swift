@@ -4,11 +4,17 @@ import SwiftTerm
 import TermesKit
 
 @MainActor
-final class MobileTerminalController: UIViewController, TerminalViewDelegate {
+final class MobileTerminalController: UIViewController, TerminalViewDelegate, UITextFieldDelegate {
   let terminal: TerminalView
   private let manager: SessionManager
   private var appliedSettings: AppearanceSettings?
   private var appliedDark: Bool?
+  let searchField = UISearchTextField()
+  let searchStatus = UILabel()
+  private(set) var searchBar = UIStackView()
+  private var restoreTerminalFocus = false
+  private var searchRefresh: Task<Void, Never>?
+  var isSearching: Bool { isViewLoaded && !searchBar.isHidden }
   private(set) var hasUnseenOutput = false
   private(set) lazy var newOutputButton: UIButton = {
     let button = MobileUI.button("有新输出 · 回到底部", symbol: "arrow.down", filled: true,
@@ -47,8 +53,32 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
     terminal.accessibilityIdentifier = "terminal.surface"
     terminal.keyboardDismissMode = .interactive
     terminal.contentInsetAdjustmentBehavior = .never
-    view.addSubview(terminal)
-    terminal.snp.makeConstraints { make in
+    searchField.placeholder = "搜索终端历史"
+    searchField.accessibilityIdentifier = "terminal.search"
+    searchField.autocorrectionType = .no; searchField.autocapitalizationType = .none
+    searchField.spellCheckingType = .no; searchField.returnKeyType = .search
+    searchField.delegate = self
+    searchField.addAction(UIAction { [weak self] _ in self?.refreshSearch(reset: true) }, for: .editingChanged)
+    searchStatus.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    searchStatus.accessibilityIdentifier = "terminal.searchStatus"
+    searchStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    func button(_ image: String, _ title: String, _ id: String, action: @escaping () -> Void) -> UIButton {
+      let button = UIButton(type: .system)
+      button.setImage(UIImage(systemName: image), for: .normal)
+      button.accessibilityLabel = title; button.accessibilityIdentifier = id
+      button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+      button.snp.makeConstraints { $0.width.equalTo(36); $0.height.equalTo(44) }
+      return button
+    }
+    searchBar = MobileUI.stack([searchField, searchStatus,
+      button("chevron.up", "上一个匹配", "terminal.searchPrevious") { [weak self] in self?.navigateSearch(forward: false) },
+      button("chevron.down", "下一个匹配", "terminal.searchNext") { [weak self] in self?.navigateSearch(forward: true) },
+      button("xmark", "关闭搜索", "terminal.searchClose") { [weak self] in self?.closeSearch() }], axis: .horizontal, spacing: 4)
+    searchBar.isHidden = true
+    searchField.snp.makeConstraints { $0.width.greaterThanOrEqualTo(60).priority(750) }
+    let column = MobileUI.stack([searchBar, terminal], spacing: 0)
+    view.addSubview(column)
+    column.snp.makeConstraints { make in
       make.leading.trailing.equalToSuperview().inset(6)
       make.top.bottom.equalToSuperview()
     }
@@ -80,6 +110,11 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
     guard settings != appliedSettings || dark != appliedDark else { return }
     appliedSettings = settings; appliedDark = dark
     let palette = settings.terminalTheme.palette(effectiveDark: dark)
+    let background = palette.background
+    let brightness = Int(background.red) * 299 + Int(background.green) * 587 + Int(background.blue) * 114
+    searchBar.overrideUserInterfaceStyle = brightness < 128_000 ? .dark : .light
+    searchField.textColor = palette.foreground.uiColor
+    searchStatus.textColor = palette.foreground.uiColor
     terminal.font = settings.terminalFontName.flatMap { UIFont(name: $0, size: settings.terminalFontSize) }
       ?? .monospacedSystemFont(ofSize: settings.terminalFontSize, weight: .regular)
     terminal.ansi256PaletteStrategy = .xterm
@@ -94,6 +129,7 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
     terminal.keyboardAppearance = dark ? .dark : .light
     view.backgroundColor = palette.background.uiColor
     terminal.setNeedsDisplay()
+    if isSearching { view.layoutIfNeeded(); refreshSearch(reset: true) }
   }
 
   func showKeyboard() { _ = terminal.becomeFirstResponder() }
@@ -102,7 +138,59 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
     manager.onData = nil; terminal.terminalDelegate = nil
     (terminal as? MobileTerminalView)?.onViewportChanged = nil
     hasUnseenOutput = false
+    searchRefresh?.cancel(); searchRefresh = nil
     if isViewLoaded { updateOutputNotice() }
+  }
+
+  func showSearch() {
+    loadViewIfNeeded()
+    if searchBar.isHidden { restoreTerminalFocus = terminal.isFirstResponder }
+    searchBar.isHidden = false
+    refreshSearch(reset: true)
+    searchField.becomeFirstResponder()
+  }
+  func closeSearch() {
+    terminal.clearSearch()
+    searchField.resignFirstResponder()
+    searchBar.isHidden = true
+    searchRefresh?.cancel(); searchRefresh = nil
+    if restoreTerminalFocus { showKeyboard() }
+  }
+  func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+    navigateSearch(forward: true); return false
+  }
+  func navigateSearch(forward: Bool) {
+    guard isSearching else { showSearch(); return }
+    let query = searchField.text ?? ""
+    if !query.isEmpty {
+      if forward { terminal.findNext(query) } else { terminal.findPrevious(query) }
+    }
+    refreshSearch(reset: false)
+  }
+  func refreshSearch(reset: Bool) {
+    let query = searchField.text ?? ""
+    if reset { terminal.clearSearch(); if !query.isEmpty { terminal.findNext(query) } }
+    let summary = terminal.searchMatchSummary(query, limit: 1001)
+    searchStatus.text = query.isEmpty ? "" : summary.total == 0 ? "无匹配"
+      : summary.total > 1000 ? "1000+" : summary.index == 0 ? "\(summary.total) 项" : "\(summary.index)/\(summary.total)"
+  }
+  func exportSnapshot() -> Data { terminal.getBufferAsData() }
+  func exportOutput(from presenter: UIViewController) {
+    presenter.view.endEditing(true)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Termes-Export-\(UUID())", isDirectory: true)
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let url = directory.appendingPathComponent("termes-terminal.txt")
+      try exportSnapshot().write(to: url, options: [.atomic, .completeFileProtection])
+      let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+      activity.popoverPresentationController?.sourceView = presenter.view
+      activity.popoverPresentationController?.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.safeAreaInsets.top, width: 1, height: 1)
+      activity.completionWithItemsHandler = { _, _, _, _ in try? FileManager.default.removeItem(at: directory) }
+      presenter.present(activity, animated: true)
+    } catch {
+      try? FileManager.default.removeItem(at: directory)
+      presenter.presentError(error.localizedDescription)
+    }
   }
 
   private var isReadingHistory: Bool { terminal.canScroll && terminal.scrollPosition < 1 }
@@ -113,6 +201,13 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
     terminal.feed(byteArray: Array(data)[...])
     if wasReadingHistory && isReadingHistory { hasUnseenOutput = true }
     updateOutputNotice()
+    if isSearching, searchRefresh == nil {
+      searchRefresh = Task { @MainActor [weak self] in
+        do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+        self?.searchRefresh = nil
+        self?.refreshSearch(reset: false)
+      }
+    }
   }
 
   private func updateOutputNotice() {
@@ -149,7 +244,6 @@ final class MobileTerminalController: UIViewController, TerminalViewDelegate {
 final class MobileTerminalView: TerminalView {
   var onViewportChanged: (() -> Void)?
   private var viewportNotificationPending = false
-
   override func deleteBackward() {
     guard let marked = markedTextRange else {
       super.deleteBackward()
