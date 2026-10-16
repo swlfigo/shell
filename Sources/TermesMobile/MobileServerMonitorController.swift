@@ -4,7 +4,8 @@ import Combine
 import TermesKit
 import SSHCore
 
-/// The sheet owns only monitoring. Its pause/close actions never change the terminal session.
+/// The sheet borrows the session's monitor. Dismissal pauses collection and keeps
+/// bounded history in memory; closing the session releases the cached data.
 @MainActor
 final class MobileServerMonitorController: UIViewController, UIAdaptivePresentationControllerDelegate {
   let model: ServerMonitorModel
@@ -82,6 +83,7 @@ final class MobileServerMonitorController: UIViewController, UIAdaptivePresentat
     isVisible = true
     navigationController?.presentationController?.delegate = self
     presentationController?.delegate = self
+    model.refreshTime()
     if !hasOpened { hasOpened = true; model.open() }
     if isUserPaused || isInBackground { model.pause() }
     else if model.isPaused { model.resume() }
@@ -117,7 +119,7 @@ final class MobileServerMonitorController: UIViewController, UIAdaptivePresentat
     guard !isShutdown else { return }
     isShutdown = true; isVisible = false
     stopClock()
-    model.close()
+    model.pause()
     render()
     subscriptions.removeAll()
     onClose?()

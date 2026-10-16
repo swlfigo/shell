@@ -85,7 +85,7 @@ public final class ServerMonitorModel: ObservableObject {
   }
   public func close() {
     isOpen = false; isPaused = false; stop(); state = .closed
-    // A closed panel owns no history or cached server data. Credentials never enter either.
+    // Explicitly closing the monitor releases cached metrics and history.
     current = nil; history = []
   }
   public func pause() { guard isOpen else { return }; isPaused = true; stop(); state = .paused }

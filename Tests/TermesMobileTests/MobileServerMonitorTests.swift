@@ -165,7 +165,7 @@ final class MobileServerMonitorTests: XCTestCase {
     XCTAssertFalse(controller.isUserPaused)
   }
 
-  func testBackgroundNotificationsPreserveManualPauseAndCannotReopenClosedMonitor() async throws {
+  func testBackgroundNotificationsPreserveManualPauseAndCannotResumeDismissedMonitor() async throws {
     let screen = screen(), controller = screen.controller
     defer { controller.shutdown() }
     controller.viewDidAppear(false)
@@ -196,9 +196,17 @@ final class MobileServerMonitorTests: XCTestCase {
     controller.resumeFromBackground()
     controller.viewDidAppear(false)
     await Task.yield()
-    XCTAssertEqual(screen.model.state, .closed)
-    XCTAssertFalse(screen.model.isOpen)
+    XCTAssertEqual(screen.model.state, .paused)
+    XCTAssertTrue(screen.model.isOpen)
+    XCTAssertNotNil(screen.model.current)
+    XCTAssertEqual(screen.model.history.count, 1)
     XCTAssertEqual(screen.clients.clients.count, 2, "a dismissed monitor must not reopen on foreground notification")
+    screen.model.setConnection(connected: false, version: 2, destination: nil)
+    screen.model.setConnection(connected: true, version: 3, destination: nil)
+    await Task.yield()
+    XCTAssertEqual(screen.model.state, .paused)
+    XCTAssertEqual(screen.model.history.count, 1)
+    XCTAssertEqual(screen.clients.clients.count, 2, "a terminal reconnect must not restart a dismissed monitor")
   }
 
   func testConnectionAndUnsupportedStatesAreVisibleAndRetryUsesCurrentConnection() async throws {
@@ -236,7 +244,7 @@ final class MobileServerMonitorTests: XCTestCase {
     XCTAssertTrue(controller.cpuLabel.text?.contains("等待") == true, "reconnect must not show a rate across the disconnected interval")
   }
 
-  func testShutdownInterruptsCollectionAndClearsCachedServerData() async throws {
+  func testDismissalInterruptsCollectionAndPreservesSessionHistoryUntilSessionCloses() async throws {
     let screen = screen(), controller = screen.controller
     defer { controller.shutdown() }
     controller.viewDidAppear(false)
@@ -244,21 +252,31 @@ final class MobileServerMonitorTests: XCTestCase {
     let client = try XCTUnwrap(screen.clients.clients.first)
     client.deliver(sample())
     try await wait { client.requests == 2 && client.isSampling }
-    XCTAssertFalse(screen.model.history.isEmpty)
+    let history = screen.model.history
+    XCTAssertEqual(history.count, 1)
 
     controller.shutdown()
     try await wait { client.closes > 0 && !client.isSampling }
-    XCTAssertEqual(screen.model.state, .closed)
-    XCTAssertNil(screen.model.current)
-    XCTAssertTrue(screen.model.history.isEmpty)
+    XCTAssertEqual(screen.model.state, .paused)
+    XCTAssertEqual(screen.model.current?.sample, sample())
+    XCTAssertEqual(screen.model.history, history)
     controller.shutdown()
     controller.resumeFromBackground()
     await Task.yield()
-    XCTAssertFalse(screen.model.isOpen)
+    XCTAssertTrue(screen.model.isOpen)
+    XCTAssertTrue(screen.model.isPaused)
     XCTAssertEqual(screen.clients.clients.count, 1)
+
+    // The session owner, rather than a dismissed page, clears its in-memory cache.
+    screen.model.close()
+    XCTAssertEqual(screen.model.state, .closed)
+    XCTAssertNil(screen.model.current)
+    XCTAssertTrue(screen.model.history.isEmpty)
+    controller.viewDidAppear(false)
+    XCTAssertFalse(screen.model.isOpen)
   }
 
-  func testRemovingContainerChildClosesSynchronouslyAndReleasingOldPageKeepsReopenedMonitorAlive() async throws {
+  func testRemovingContainerChildPreservesHistoryAndReleasingOldPageKeepsReopenedMonitorAlive() async throws {
     let clients = MobileMonitorTestClients(), clock = MobileMonitorTestClock()
     let model = ServerMonitorModel(interval: 0.02, now: { clock.time }) { clients.open() }
     model.setConnection(connected: true, version: 1, destination: nil)
@@ -274,14 +292,15 @@ final class MobileServerMonitorTests: XCTestCase {
     try await wait { clients.clients.first?.isSampling == true }
     clients.clients[0].deliver(sample())
     try await wait { model.current != nil }
+    let history = model.history
 
     previous!.willMove(toParent: nil)
     previous!.view.removeFromSuperview()
     previous!.removeFromParent()
-    XCTAssertEqual(model.state, .closed, "removing a contained page must close synchronously without waiting for deinit")
+    XCTAssertEqual(model.state, .paused, "removing a contained page must pause synchronously without waiting for deinit")
     XCTAssertTrue(previous!.isShutdown)
-    XCTAssertNil(model.current)
-    XCTAssertTrue(model.history.isEmpty)
+    XCTAssertNotNil(model.current)
+    XCTAssertEqual(model.history, history)
 
     let fresh = MobileServerMonitorController(model: model, serverName: "Reopened")
     defer {
@@ -294,14 +313,45 @@ final class MobileServerMonitorTests: XCTestCase {
     container.view.addSubview(fresh.view)
     fresh.didMove(toParent: container)
     fresh.viewDidAppear(false)
+    XCTAssertEqual(fresh.memoryLabel.text, "25.0%", "reopening must display the cached snapshot before a new sample arrives")
+    XCTAssertEqual(model.history, history)
+    XCTAssertEqual(fresh.usageChart.series.first { $0.name == "内存" }?.points.map(\.time), history.map(\.monotonicTime))
+    previous!.shutdown()
+    previous!.viewWillDisappear(false)
+    previous!.resumeFromBackground()
     previous = nil
     try await wait { weakPrevious == nil && clients.clients.count == 2 && clients.clients[1].isSampling }
     XCTAssertTrue(model.isOpen)
     XCTAssertFalse(fresh.isShutdown)
-    clients.clients[1].deliver(sample())
-    try await wait { fresh.memoryLabel.text == "25.0%" }
+    clock.time = 1_005
+    clients.clients[1].deliver(sample(time: 1_005, second: true))
+    try await wait { model.history.count == 2 }
     XCTAssertTrue(model.isOpen, "the previous page's deallocation must not close the newly opened page's model")
-    XCTAssertEqual(model.history.count, 1)
+    XCTAssertEqual(model.history.first, history.first)
+    XCTAssertNotEqual(model.history.last?.segment, history.last?.segment)
+    XCTAssertEqual(model.current?.cpu, .unavailable(.waitingForBaseline))
+    XCTAssertEqual(model.current?.network.value?.first?.receivedBytesPerSecond, .unavailable(.waitingForBaseline))
+  }
+
+  func testReopeningPrunesExpiredHistoryWithoutWaitingForAnotherSample() async throws {
+    let screen = screen(), controller = screen.controller
+    defer { screen.model.close() }
+    controller.viewDidAppear(false)
+    try await wait { screen.clients.clients.first?.isSampling == true }
+    screen.clients.clients[0].deliver(sample())
+    try await wait { screen.model.history.count == 1 }
+    controller.shutdown()
+    try await wait { screen.clients.clients[0].closes > 0 }
+
+    screen.clock.time += ServerMonitorModel.historyDuration + 1
+    let reopened = MobileServerMonitorController(model: screen.model, serverName: "Reopened")
+    defer { reopened.shutdown() }
+    reopened.loadViewIfNeeded()
+    reopened.viewDidAppear(false)
+    XCTAssertTrue(screen.model.history.isEmpty, "a page left closed for 15 minutes must not retain expired chart points")
+    XCTAssertEqual(reopened.memoryLabel.text, "25.0%", "the last snapshot remains available while the new sample is pending")
+    XCTAssertTrue(reopened.statusLabel.text?.contains("已过期") == true)
+    try await wait { screen.clients.clients.count == 2 && screen.clients.clients[1].isSampling }
   }
 
   func testNarrowWideAndLandscapeLayoutsScrollWithoutExposingCredentials() async throws {
