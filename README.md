@@ -93,6 +93,10 @@ xcrun swift --version # 应显示 Swift 6.4.1
 
 在 Mac 上打开 `Termes.xcodeproj`，选择 **Termes** Scheme 运行 Mac 版，或选择 **TermesMobile** Scheme 在 iPhone / iPad 模拟器或真机上运行。Mac 版也可通过 `swift run Termes` 启动。移动端的签名与测试说明见 [iPhone 与 iPad](#iphone-与-ipad)。
 
+本机日常使用可运行 `./scripts/build-macos-release.sh`，生成经过开发证书签名的 Release 应用及 ZIP，输出到 `build/release/`。将其中的 `Build/Products/Release/Termes.app` 放入 `/Applications` 后启动。脚本需要本机已有有效代码签名证书，首次选择证书后，会在忽略提交的 `build/release/signing-identity` 中记录指纹，后续构建复用；也可通过 `TERMES_SIGNING_IDENTITY` 指定证书的 SHA-1 指纹。请保留该记录，或继续指定相同签名身份。
+
+旧版本保存的凭据首次由新签名应用访问时，macOS 可能要求输入 Mac 登录密码；选择“始终允许”后，后续相同签名身份的版本可沿用授权。Xcode 的默认本地临时签名以及 `swift run` 生成的可执行文件不保证跨构建沿用钥匙串授权，日常连接建议使用安装到“应用程序”的签名版本。
+
 1. 打开 Termes，在 **Vaults → Hosts** 新建主机；移动端轻点列表右上角的 **+**。
 2. 填写名称、主机地址、端口和用户名，选择密码或私钥；需要时设置跳板机。
 3. 保存连接并点击 **连接**，首次连接时核对服务器指纹。

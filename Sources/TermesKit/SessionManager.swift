@@ -62,8 +62,14 @@ public final class SessionManager: ObservableObject {
   public private(set) var lastSize: (cols: Int, rows: Int)?
 
   var config: ConnectionConfig?
-  /// The current session's in-memory config (nil once the session ends); used to duplicate it.
+  /// The active connection's in-memory config (nil after failure/disconnect); used to duplicate it.
   public var currentConfig: ConnectionConfig? { config }
+  /// Kept only in memory so an explicit retry does not have to reopen the connection form.
+  private var failedConfig: ConnectionConfig?
+  public var canRetryConnection: Bool {
+    if case .failed = state { return failedConfig != nil }
+    return false
+  }
   private var channel: ShellChannel?
   private var reconnectTask: Task<Void, Never>?
   /// The current backoff sleep; cancelling it ends only this wait, not the reconnect loop.
@@ -128,6 +134,16 @@ public final class SessionManager: ObservableObject {
   }
 
   public func connect(_ config: ConnectionConfig, cols: Int = 80, rows: Int = 24) async {
+    await connect(config, cols: cols, rows: rows, attempt: 1)
+  }
+
+  /// Starts a new attempt with the failed connection's original route and credentials.
+  public func retryConnection() async {
+    guard canRetryConnection, let config = failedConfig else { return }
+    await connect(config, cols: 80, rows: 24, attempt: connectionProgress.attempt + 1)
+  }
+
+  private func connect(_ config: ConnectionConfig, cols: Int, rows: Int, attempt: Int) async {
     let (cols, rows) = lastSize ?? (cols, rows)
     switch state {
     case .connecting, .needsHostKeyConfirm, .connected, .reconnecting: return
@@ -135,8 +151,9 @@ public final class SessionManager: ObservableObject {
     }
     generation += 1
     let gen = generation
+    failedConfig = nil
     self.config = config
-    let progress = beginProgress(config: config, generation: gen, attempt: 1)
+    let progress = beginProgress(config: config, generation: gen, attempt: attempt)
     if pathMonitor == nil { startPathMonitor() }
     state = .connecting
     pending.removeAll()
@@ -167,6 +184,7 @@ public final class SessionManager: ObservableObject {
       connection = nil
       self.config = nil
       if error is CancellationError || Task.isCancelled { disconnect(); return }
+      failedConfig = config
       state = .failed(Self.message(for: error))
     }
   }
@@ -273,6 +291,7 @@ public final class SessionManager: ObservableObject {
     pathMonitor?.cancel()
     pathMonitor = nil
     config = nil
+    failedConfig = nil
     pendingHostKeyEndpoint = nil
     if let c = hostKeyContinuation { hostKeyContinuation = nil; c.resume(returning: false) }
     // stop() cancels the pump, so onClosed does not fire for a local disconnect.
@@ -374,6 +393,7 @@ public final class SessionManager: ObservableObject {
           self.connectionProgress.fail(token: progress.token)
           if let e = error as? SSHError, Self.isPermanent(e) {
             self.config = nil
+            self.failedConfig = config
             self.state = .failed(Self.message(for: error))
             self.reconnectTask = nil
             return

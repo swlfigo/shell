@@ -78,6 +78,33 @@ final class SessionManagerTests: XCTestCase {
     XCTAssertEqual(m.state, .idle)
   }
 
+  func testManualRetryRetainsFailedConfigurationUntilDisconnectAndNeverReconnectsAfterCancellation() async {
+    let manager = SessionManager(knownHosts: NoopStore())
+    defer { manager.disconnect() }
+    XCTAssertFalse(manager.canRetryConnection)
+    await manager.retryConnection()
+    XCTAssertEqual(manager.state, .idle)
+    let config = ConnectionConfig(hostname: "127.0.0.1", port: 1, username: "retry-user", auth: .password("RETRY_SECRET"))
+    await manager.connect(config)
+    guard case .failed = manager.state else { return XCTFail("expected a closed-port failure") }
+    XCTAssertTrue(manager.canRetryConnection)
+    XCTAssertNil(manager.currentConfig)
+    let attemptID = manager.connectionProgress.attemptID
+    await manager.retryConnection()
+    guard case .failed = manager.state else { return XCTFail("expected another closed-port failure") }
+    XCTAssertTrue(manager.canRetryConnection)
+    XCTAssertEqual(manager.connectionProgress.attempt, 2)
+    XCTAssertNotEqual(manager.connectionProgress.attemptID, attemptID)
+    XCTAssertFalse(manager.connectionProgress.logs.contains { $0.text.contains("RETRY_SECRET") })
+    manager.disconnect()
+    XCTAssertFalse(manager.canRetryConnection)
+    let cancelledAttemptID = manager.connectionProgress.attemptID
+    await manager.retryConnection()
+    XCTAssertEqual(manager.state, .disconnected)
+    XCTAssertNil(manager.currentConfig)
+    XCTAssertEqual(manager.connectionProgress.attemptID, cancelledAttemptID)
+  }
+
   func testSnippetIsNotInsertedWhileIdleOrReconnecting() {
     let manager = SessionManager(knownHosts: NoopStore())
     let snippet = Snippet(name: "Disk", command: "df -h")

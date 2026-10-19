@@ -50,6 +50,10 @@ final class ConnectionProgressViewController: NSViewController {
     fingerprintLabel.setAccessibilityLabel("需要信任的服务器及完整 SHA256 指纹")
     spinner.style = .spinning; spinner.controlSize = .small; spinner.isIndeterminate = true
     cancelButton.keyEquivalent = "\u{1b}"
+    retryButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
+    retryButton.imagePosition = .imageLeading
+    retryButton.toolTip = "使用本次连接配置重新连接"
+    retryButton.setAccessibilityIdentifier("connection.retry")
     logView.isEditable = false; logView.isSelectable = true; logView.isRichText = false
     logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
     logView.textColor = .labelColor; logView.drawsBackground = false
@@ -71,7 +75,11 @@ final class ConnectionProgressViewController: NSViewController {
   }
   func shutdown() { observers.removeAll(); spinner.stopAnimation(nil) }
   func setServerName(_ name: String) { serverName = name; render() }
-  func focusAction() { view.window?.makeFirstResponder(cancelButton.isHidden ? closeButton : cancelButton) }
+  func focusAction() {
+    render()
+    let action = !retryButton.isHidden && retryButton.isEnabled ? retryButton : (cancelButton.isHidden ? closeButton : cancelButton)
+    view.window?.makeFirstResponder(action)
+  }
   @objc func toggleLogs() { showsLogs.toggle(); render() }
   @objc func trust() { confirm(true) }
   @objc func reject() { confirm(false) }
@@ -81,8 +89,22 @@ final class ConnectionProgressViewController: NSViewController {
   }
   @objc func cancelConnection() { guard hasCurrentAttempt else { return }; session.disconnect() }
   @objc func retryConnection() {
-    guard hasCurrentAttempt, case .waitingRetry = session.connectionProgress.state else { return }
-    session.retryReconnectNow()
+    guard hasCurrentAttempt, retryButton.isEnabled else { return }
+    switch session.connectionProgress.state {
+    case .failed:
+      guard session.canRetryConnection else { return }
+      retryButton.isEnabled = false
+      let session = session
+      let attemptID = displayedAttempt
+      Task {
+        guard session.connectionProgress.attemptID == attemptID else { return }
+        await session.retryConnection()
+      }
+    case .waitingRetry:
+      retryButton.isEnabled = false
+      session.retryReconnectNow()
+    default: return
+    }
   }
   @objc func closeProgress() {
     guard hasCurrentAttempt else { return }
@@ -144,7 +166,14 @@ final class ConnectionProgressViewController: NSViewController {
     fingerprintLabel.isHidden = displayedFingerprint == nil
     trustButton.isHidden = displayedFingerprint == nil; rejectButton.isHidden = displayedFingerprint == nil
     cancelButton.isHidden = !model.canCancel; cancelButton.isEnabled = model.canCancel
-    if case .waitingRetry = model.state { retryButton.isHidden = false } else { retryButton.isHidden = true }
+    switch model.state {
+    case .failed:
+      retryButton.title = "重试"; retryButton.isHidden = !session.canRetryConnection; retryButton.isEnabled = session.canRetryConnection
+    case .waitingRetry:
+      retryButton.title = "立即重试"; retryButton.isHidden = false; retryButton.isEnabled = true
+    default:
+      retryButton.isHidden = true; retryButton.isEnabled = false
+    }
     closeButton.title = model.canCancel ? "返回编辑" : (model.state == .ready || model.state == .disconnected ? "关闭" : "返回编辑")
     logButton.title = showsLogs ? "收起日志" : "展开日志"; logScroll.isHidden = !showsLogs
     if lastLogID != model.logs.last?.id {

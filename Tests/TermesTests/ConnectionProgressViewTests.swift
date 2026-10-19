@@ -131,6 +131,43 @@ final class ConnectionProgressViewTests: XCTestCase {
     XCTAssertFalse(pane.session.connectionProgress.logs.contains { $0.text.contains("SECRET_NOT_FOR_LOGS") })
   }
 
+  func test_failed_connection_retry_reuses_configuration_and_connects_in_same_pane_without_duplicate_attempts() async throws {
+    let (server, main, pane, config) = try await fixture()
+    await server.drop()
+    open(pane, config)
+    try await wait { if case .failed = pane.session.state { return pane.progressVC != nil }; return false }
+    let progress = try XCTUnwrap(pane.progressVC); progress.render()
+    let retry = try XCTUnwrap(descendants(progress.view).compactMap { $0 as? NSButton }.first { $0.title == "重试" })
+    XCTAssertFalse(retry.isHiddenOrHasHiddenAncestor); XCTAssertTrue(retry.isEnabled)
+    let attemptID = pane.session.connectionProgress.attemptID, logs = pane.session.connectionProgress.logs
+    let label = pane.label
+    if let previewPath = ProcessInfo.processInfo.environment["TERMES_RETRY_PREVIEW_PATH"] {
+      let window = try XCTUnwrap(main.window)
+      window.setContentSize(.init(width: 1100, height: 760))
+      let content = try XCTUnwrap(window.contentView)
+      content.layoutSubtreeIfNeeded()
+      progress.view.layoutSubtreeIfNeeded(); progress.render(); progress.focusAction()
+      let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+      content.cacheDisplay(in: content.bounds, to: bitmap)
+      let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+      try png.write(to: URL(fileURLWithPath: previewPath))
+    }
+    try await server.restart()
+    retry.performClick(nil); retry.performClick(nil)
+    progress.retryConnection()
+    try await wait { pane.session.connectionProgress.state == .waitingForTrust }
+    progress.render()
+    XCTAssertTrue(retry.isHidden)
+    XCTAssertEqual(pane.session.connectionProgress.attempt, 2)
+    XCTAssertNotEqual(pane.session.connectionProgress.attemptID, attemptID)
+    XCTAssertTrue(pane.progressVC === progress)
+    XCTAssertTrue(pane.session.connectionProgress.logs.contains { logs.contains($0) })
+    try await ready(pane)
+    XCTAssertEqual(pane.session.currentConfig, config)
+    XCTAssertEqual(pane.label, label)
+    XCTAssertFalse(pane.session.canRetryConnection)
+  }
+
   func test_closing_active_log_window_cancels_and_reject_button_preserves_failed_stage() async throws {
     let (_, _, pane, config) = try await fixture()
     open(pane, config)
